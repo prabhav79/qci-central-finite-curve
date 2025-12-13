@@ -6,6 +6,7 @@ import pandas as pd
 from ui_components import render_header, render_metrics, render_knowledge_graph
 import urllib.parse
 import base64
+from streamlit_pdf_viewer import pdf_viewer
 
 st.set_page_config(layout="wide", page_title="QCI Central Finite Curve", page_icon="∞")
 
@@ -86,7 +87,6 @@ def shorten_label(filename):
     return filename[:15] + "..."
 
 # --- MAIN APP ---
-# --- MAIN APP ---
 def render_pdf_viewer():
     file_id = st.session_state.get("active_pdf_id")
     if not file_id:
@@ -106,31 +106,25 @@ def render_pdf_viewer():
     with c2:
         st.subheader(f"📄 Viewing: {shorten_label(file_id)}")
 
-    with c2:
-        st.subheader(f"📄 Viewing: {shorten_label(file_id)}")
-
     # PDF Display
-    # STRATEGY: Base64 Embedding
-    # Since we can read the file (download works) but not serve it via URL (404 issues),
-    # we will embed the file content directly into the HTML. This is robust across all deployments.
+    # STRATEGY: Streamlit PDF Viewer Component
+    # This reads the binary file locally (guaranteed to exists since we can download it)
+    # and renders it natively in the app using PDF.js logic, bypassing Chrome Security blocks on iframes.
     
     file_path = f"static/pdfs/{file_id}.pdf"
     
     try:
+        # We pass the file path directly if it's local
+        pdf_viewer(file_path, width=1000, height=1000)
+        
+        # Download Button (Keep as fallback)
         with open(file_path, "rb") as f:
-            base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-
-        # Download Button
-        st.download_button(
-            label="⬇️ Download PDF",
-            data=base64.b64decode(base64_pdf),
-            file_name=f"{file_id}.pdf",
-            mime="application/pdf"
-        )
-
-        # Iframe for viewing
-        pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="900px" style="border: none;"></iframe>'
-        st.markdown(pdf_display, unsafe_allow_html=True)
+            st.download_button(
+                label="⬇️ Download PDF",
+                data=f,
+                file_name=f"{file_id}.pdf",
+                mime="application/pdf"
+            )
         
     except FileNotFoundError:
         st.error(f"File not found on server: {file_path}")

@@ -3,5 +3,6 @@ pandas
 streamlit-agraph
 numpy
 python-dotenv
+streamlit-pdf-viewer
 # google-cloud-aiplatform # If needed for vertex
 # google-cloud-storage
