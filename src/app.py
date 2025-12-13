@@ -85,16 +85,51 @@ def shorten_label(filename):
     return filename[:15] + "..."
 
 # --- MAIN APP ---
-def main():
-    render_header()
+# --- MAIN APP ---
+def render_pdf_viewer():
+    file_id = st.session_state.get("active_pdf_id")
+    if not file_id:
+        st.error("No file selected.")
+        if st.button("Back to Dashboard"):
+            st.session_state["view_mode"] = "dashboard"
+            st.rerun()
+        return
+
+    # Header
+    c1, c2 = st.columns([1, 5])
+    with c1:
+        if st.button("⬅️ Back to Dashboard"):
+            st.session_state["view_mode"] = "dashboard"
+            st.session_state["active_pdf_id"] = None
+            st.rerun()
+    with c2:
+        st.subheader(f"📄 Viewing: {shorten_label(file_id)}")
+
+    # PDF Display
+    # Use local static path for inline rendering (Streamlit serves this with application/pdf)
+    safe_filename = urllib.parse.quote(file_id)
+    pdf_path = f"app/static/pdfs/{safe_filename}.pdf"
     
+    # Download Button (Standard HTML download to force download)
+    st.download_button(
+        label="⬇️ Download PDF",
+        data=open(f"static/pdfs/{file_id}.pdf", "rb").read(),
+        file_name=f"{file_id}.pdf",
+        mime="application/pdf"
+    )
+
+    # Iframe for viewing
+    # Height 800px for good reading experience
+    st.markdown(f'<iframe src="{pdf_path}" width="100%" height="900px" style="border: none;"></iframe>', unsafe_allow_html=True)
+
+def render_dashboard():
+    # --- SEARCH ENGINE ---
     df = load_data()
     
     if df.empty:
         st.warning("No data found in data/processed. Please run ingestion first.")
         return
 
-    # --- SEARCH ENGINE ---
     search_query = st.text_input("🔍 Search Database (Ministry, Amount, Scope/Deliverables...)", "")
     
     if search_query:
@@ -123,13 +158,12 @@ def main():
                         st.markdown(f"**Match Context:**\n> {snippet}")
                     
                     st.text(f"File: {row['filename']}")
-                    # Add PDF Link - USING GITHUB RAW for 100% Reliability on Cloud
-                    safe_filename = urllib.parse.quote(row['filename'])
-                    # Base URL for GitHub Raw Content
-                    GITHUB_RAW_BASE = "https://raw.githubusercontent.com/prabhav79/qci-central-finite-curve/main/static/pdfs/"
-                    pdf_url = f"{GITHUB_RAW_BASE}{safe_filename}.pdf"
                     
-                    st.markdown(f'<a href="{pdf_url}" target="_blank" style="text-decoration: none;"><button style="background-color:#4285F4; color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;">📄 Open PDF</button></a>', unsafe_allow_html=True)
+                    # Viewer Button
+                    if st.button(f"📄 Open PDF", key=f"btn_{row['filename']}"):
+                        st.session_state["active_pdf_id"] = row['filename']
+                        st.session_state["view_mode"] = "viewer"
+                        st.rerun()
 
                     if row['deliverables']:
                         with st.expander("View extracted Scope/Deliverables"):
@@ -258,23 +292,9 @@ def main():
              # Check if it is a file node (files usually have "Work Order" or specific ID patterns, ministries are names)
              # Simplest check: Matches a filename in our DF
              if selected_node_id in filtered_df["filename"].values:
-                 safe_filename = urllib.parse.quote(selected_node_id)
-                 # Base URL for GitHub Raw Content
-                 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/prabhav79/qci-central-finite-curve/main/static/pdfs/"
-                 pdf_url = f"{GITHUB_RAW_BASE}{safe_filename}.pdf"
-                 
-                 st.toast(f"Opening PDF: {selected_node_id}", icon="📄")
-                 
-                 # Direct JS Open attempt
-                 js_code = f"""
-                    <script>
-                        window.open("{pdf_url}", "_blank");
-                    </script>
-                 """
-                 st.components.v1.html(js_code, height=0, width=0)
-                 
-                 # Button Fallback (Always show button)
-                 st.markdown(f'<a href="{pdf_url}" target="_blank" id="open_pdf_btn"><button style="width:100%; background-color:#34A853; color:white; border:none; padding:10px; border-radius:5px; margin-top:10px; font-weight:bold;">🚀 Open Selected PDF: {shorten_label(selected_node_id)}</button></a>', unsafe_allow_html=True)
+                 st.session_state["active_pdf_id"] = selected_node_id
+                 st.session_state["view_mode"] = "viewer"
+                 st.rerun()
              
              # Check if it is QCI or Ministry (Collapsing Logic)
              elif selected_node_id == "QCI" or selected_node_id in filtered_df["ministry_norm"].values:
@@ -302,10 +322,27 @@ def main():
             st.write(f"**Date**: {file_data['date']}")
             st.write(f"**Value**: ₹{file_data['value_inr']:,.2f}")
             
+            if st.button("🚀 Open PDF in Viewer", key="details_open_pdf"):
+                st.session_state["active_pdf_id"] = selected_file
+                st.session_state["view_mode"] = "viewer"
+                st.rerun()
+
             # Show Raw JSON Content (Partial)
             with open(os.path.join("data/processed", f"{selected_file}.json"), "r") as f:
                 full_json = json.load(f)
                 st.text_area("Extracted Content", full_json["content"]["full_text"][:500] + "...", height=200)
+
+def main():
+    render_header()
+    
+    # Initialize View Mode
+    if "view_mode" not in st.session_state:
+        st.session_state["view_mode"] = "dashboard"
+    
+    if st.session_state["view_mode"] == "viewer":
+        render_pdf_viewer()
+    else:
+        render_dashboard()
 
 if __name__ == "__main__":
     main()
