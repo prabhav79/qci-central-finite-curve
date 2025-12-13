@@ -1,0 +1,7 @@
+streamlit
+pandas
+streamlit-agraph
+numpy
+python-dotenv
+# google-cloud-aiplatform # If needed for vertex
+# google-cloud-storage

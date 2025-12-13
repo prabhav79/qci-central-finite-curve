@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.mypy_cache/
+
+# Virtual Env
+venv/
+.venv/
+
+# Environment Variables
+.env
+
+# Secrets
+service_account.json
+credentials.json
+client_secret.json
+
+# Local Data (Optional - usually good to ignore large raw files)
+# Keeping processed/static for deployment
+data/raw/
+data/quarantine/
+data/temp_images/
+analysis.txt

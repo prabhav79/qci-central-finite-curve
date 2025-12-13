@@ -1,0 +1,305 @@
+import streamlit as st
+import glob
+import json
+import os
+import pandas as pd
+from ui_components import render_header, render_metrics, render_knowledge_graph
+import urllib.parse
+
+st.set_page_config(layout="wide", page_title="QCI Central Finite Curve", page_icon="∞")
+
+# --- DATA LOADING ---
+@st.cache_data
+def load_data():
+    files = glob.glob(os.path.join("data/processed", "*.json"))
+    data = []
+    for f in files:
+        try:
+            with open(f, "r", encoding='utf-8') as infile:
+                doc = json.load(infile)
+                # Flatten meta
+                row = doc.get("meta", {})
+                row["filename"] = doc.get("doc_id")
+                # Ensure fields exist
+                row["ministry"] = row.get("ministry", "Unknown")
+                row["date"] = row.get("date", "Unknown")
+                row["value_inr"] = float(row.get("value_inr", 0)) if row.get("value_inr") else 0.0
+                
+                # Prioritize specific project subject over generic domain
+                row["project_subject"] = row.get("project_subject", "")
+                if not row["project_subject"] or row["project_subject"] == "Unknown Subject":
+                     row["display_subject"] = row.get("domains", [""])[0] if row.get("domains") else "Unknown"
+                else:
+                     row["display_subject"] = row["project_subject"]
+                
+                # Backward compatibility for UI
+                row["subject"] = row["display_subject"]
+
+                # Add content fields
+                content = doc.get("content", {})
+                row["full_text"] = content.get("full_text", "")
+                row["deliverables"] = content.get("deliverables", "")
+                
+                data.append(row)
+        except Exception as e:
+            print(f"Error loading {f}: {e}")
+            
+    return pd.DataFrame(data)
+
+def get_snippet(text, query, context=50):
+    if not query:
+        return text[:200]
+    
+    idx = text.lower().find(query.lower())
+    if idx == -1:
+        return text[:200]
+        
+    start = max(0, idx - context)
+    end = min(len(text), idx + len(query) + context)
+    return "..." + text[start:end].replace("\n", " ") + "..."
+
+def normalize_ministry(name):
+    # Normalize variants of Ministry name
+    name_lower = name.lower()
+    if "personnel" in name_lower and "pensions" in name_lower:
+        return "Ministry of Personnel, PG & Pensions"
+    return name
+
+def shorten_label(filename):
+    # Convert "5th Work Order_SCDPM PMU_DARPG..." -> "5th SCDPM PMU"
+    try:
+        parts = filename.split('_')
+        if len(parts) >= 2:
+            # part[0] is usually "5th Work Order"
+            number_part = parts[0].split('Work')[0].strip() # "5th"
+            
+            # part[1] is usually "SCDPM PMU"
+            pmu_part = parts[1].replace("PMU", "").strip() # "SCDPM"
+            
+            if "PMU" not in pmu_part:
+               pmu_part += " PMU"
+               
+            return f"{number_part} {pmu_part}"
+    except Exception:
+        pass
+    return filename[:15] + "..."
+
+# --- MAIN APP ---
+def main():
+    render_header()
+    
+    df = load_data()
+    
+    if df.empty:
+        st.warning("No data found in data/processed. Please run ingestion first.")
+        return
+
+    # --- SEARCH ENGINE ---
+    search_query = st.text_input("🔍 Search Database (Ministry, Amount, Scope/Deliverables...)", "")
+    
+    if search_query:
+        # Search across relevant columns including Deliverables
+        mask = (
+            df["ministry"].str.contains(search_query, case=False, na=False) | 
+            df["filename"].str.contains(search_query, case=False, na=False) |
+            df["full_text"].str.contains(search_query, case=False, na=False) |
+            df["display_subject"].str.contains(search_query, case=False, na=False)
+        )
+        search_results = df[mask]
+        
+        st.subheader(f"Search Results ({len(search_results)})")
+        
+        for _, row in search_results.iterrows():
+            with st.expander(f"📄 {row['display_subject']} ({row['date']})"):
+                c1, c2 = st.columns([3, 1])
+                with c1:
+                    # If query matches deliverables, prioritize showing that snippet
+                    if row['deliverables'] and search_query.lower() in row['deliverables'].lower():
+                        st.markdown("**Matched in Deliverables:**")
+                        snippet = get_snippet(row['deliverables'], search_query)
+                        st.info(f"> {snippet}")
+                    else:
+                        snippet = get_snippet(row['full_text'], search_query)
+                        st.markdown(f"**Match Context:**\n> {snippet}")
+                    
+                    st.text(f"File: {row['filename']}")
+                    # Add PDF Link
+                    safe_filename = urllib.parse.quote(row['filename'])
+                    pdf_url = f"app/static/pdfs/{safe_filename}.pdf"
+                    st.markdown(f'<a href="{pdf_url}" target="_blank" style="text-decoration: none;"><button style="background-color:#4285F4; color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;">📄 Open PDF</button></a>', unsafe_allow_html=True)
+
+                    if row['deliverables']:
+                        with st.expander("View extracted Scope/Deliverables"):
+                            st.write(row['deliverables'])
+
+                with c2:
+                    st.metric("Value", f"₹{row['value_inr']:,.0f}")
+                    st.caption(f"Ministry: {row['ministry']}")
+                    
+        st.divider()
+        st.caption("Detailed Dashboard below...")
+
+    # --- SIDEBAR FILTERS ---
+    st.sidebar.title("Filters")
+    # Apply normalization to Dataframe for consistent filtering
+    df["ministry_norm"] = df["ministry"].apply(normalize_ministry)
+    
+    selected_ministry = st.sidebar.multiselect("Ministry", df["ministry_norm"].unique())
+    
+    # Cost Filter
+    min_cost = int(df["value_inr"].min())
+    max_cost = int(df["value_inr"].max())
+    cost_range = st.sidebar.slider("Total Project Cost (₹)", min_cost, max_cost, (min_cost, max_cost)) # Slider logic
+    
+    # Filter Logic
+    filtered_df = df.copy()
+    if selected_ministry:
+        filtered_df = filtered_df[filtered_df["ministry_norm"].isin(selected_ministry)]
+    
+    # Filter by Cost
+    filtered_df = filtered_df[
+        (filtered_df["value_inr"] >= cost_range[0]) & 
+        (filtered_df["value_inr"] <= cost_range[1])
+    ]
+        
+    # --- METRICS ---
+    total_val = filtered_df["value_inr"].sum()
+    top_min = filtered_df["ministry_norm"].mode()[0] if not filtered_df.empty else "N/A"
+    render_metrics(len(filtered_df), total_val, top_min)
+    
+    st.divider()
+    
+    # --- KNOWLEDGE GRAPH CONSTRUCTION ---
+    c1, c2 = st.columns([2, 1])
+    
+    with c1:
+        st.subheader("🕸️ Institutional Knowledge Graph")
+        
+        nodes = []
+        edges = []
+        
+        # Central Hub
+        nodes.append({"id": "QCI", "label": "Quality Council of India", "type": "Hub", "image": "https://upload.wikimedia.org/wikipedia/en/thumb/8/8f/Quality_Council_of_India_Logo.svg/1200px-Quality_Council_of_India_Logo.svg.png"})
+        
+        for _, row in filtered_df.iterrows():
+            # File Node
+            file_id = row["filename"]
+            short_label = shorten_label(file_id)
+            # Pass full Subject in tooltip via 'title' which we handle in ui_components
+            
+            nodes.append({"id": file_id, "label": short_label, "full_label": f"{short_label}\n{row['project_subject']}", "type": "File"})
+            
+            # Ministry Node (Normalized)
+            min_id = row["ministry_norm"]
+            nodes.append({"id": min_id, "label": min_id, "type": "Ministry"})
+            
+            # Edges
+            # QCI -> Ministry (Vendor relationship implied or Project Owner)
+            edges.append({"source": "QCI", "target": min_id, "relation": "Partners"})
+            
+            # Ministry -> File
+            edges.append({"source": min_id, "target": file_id, "relation": "Issued"})
+        
+        # Render
+        # 1. Initialize Session State for Collapsing
+        if "collapsed_nodes" not in st.session_state:
+            st.session_state["collapsed_nodes"] = set()
+            
+        # 2. Filter Nodes/Edges based on Collapsed State
+        visible_nodes = []
+        visible_edges = []
+        
+        # Check if Hub is collapsed
+        hub_collapsed = "QCI" in st.session_state["collapsed_nodes"]
+        
+        for n in nodes:
+            # Always show Hub
+            if n["id"] == "QCI":
+                visible_nodes.append(n)
+                continue
+                
+            # If Hub is collapsed, hide everything else
+            if hub_collapsed:
+                continue
+            
+            # Identify Ministry Nodes
+            if n["type"] == "Ministry":
+                visible_nodes.append(n)
+                continue
+            
+            # For File Nodes, check if their parent Ministry is collapsed
+            # We need to find the parent ministry for this file
+            # In our data construction, we know the parent from the edges or the row data
+            # Let's verify by checking the edge list for this target
+            parent_min = None
+            for e in edges:
+                if e["target"] == n["id"]:
+                    parent_min = e["source"]
+                    break
+            
+            if parent_min and parent_min in st.session_state["collapsed_nodes"]:
+                continue # Parent ministry is collapsed, hide file
+                
+            visible_nodes.append(n)
+            
+        # Filter Edges: Both source and target must be visible
+        visible_node_ids = set(n["id"] for n in visible_nodes)
+        for e in edges:
+            if e["source"] in visible_node_ids and e["target"] in visible_node_ids:
+                visible_edges.append(e)
+
+        selected_node_id = render_knowledge_graph(visible_nodes, visible_edges)
+        
+        # Handle Graph Selection (PDF Opening & Collapsing)
+        if selected_node_id:
+             # Check if it is a file node (files usually have "Work Order" or specific ID patterns, ministries are names)
+             # Simplest check: Matches a filename in our DF
+             if selected_node_id in filtered_df["filename"].values:
+                 safe_filename = urllib.parse.quote(selected_node_id)
+                 pdf_url = f"app/static/pdfs/{safe_filename}.pdf"
+                 st.toast(f"Opening PDF: {selected_node_id}", icon="📄")
+                 
+                 # Direct JS Open attempt
+                 js_code = f"""
+                    <script>
+                        window.open("{pdf_url}", "_blank");
+                    </script>
+                 """
+                 st.components.v1.html(js_code, height=0, width=0)
+                 
+                 # Button Fallback (Always show button)
+                 st.markdown(f'<a href="{pdf_url}" target="_blank" id="open_pdf_btn"><button style="width:100%; background-color:#34A853; color:white; border:none; padding:10px; border-radius:5px; margin-top:10px; font-weight:bold;">🚀 Open Selected PDF: {shorten_label(selected_node_id)}</button></a>', unsafe_allow_html=True)
+             
+             # Check if it is QCI or Ministry (Collapsing Logic)
+             elif selected_node_id == "QCI" or selected_node_id in filtered_df["ministry_norm"].values:
+                 # Toggle Collapse
+                 if selected_node_id in st.session_state["collapsed_nodes"]:
+                     st.session_state["collapsed_nodes"].remove(selected_node_id)
+                     st.toast(f"Expanded: {selected_node_id}")
+                 else:
+                     st.session_state["collapsed_nodes"].add(selected_node_id)
+                     st.toast(f"Collapsed: {selected_node_id}")
+                 
+                 # Force Rerun to update graph
+                 st.rerun()
+
+    with c2:
+        st.subheader("📄 Document Details")
+        # Update selection to allow searching logic to influence this? 
+        # For now, independent.
+        selected_file = st.selectbox("Select Document", filtered_df["filename"])
+        
+        if selected_file:
+            file_data = filtered_df[filtered_df["filename"] == selected_file].iloc[0]
+            st.info(f"**Subject**: {file_data['subject']}")
+            st.write(f"**Ministry**: {file_data['ministry_norm']}")
+            st.write(f"**Date**: {file_data['date']}")
+            st.write(f"**Value**: ₹{file_data['value_inr']:,.2f}")
+            
+            # Show Raw JSON Content (Partial)
+            with open(os.path.join("data/processed", f"{selected_file}.json"), "r") as f:
+                full_json = json.load(f)
+                st.text_area("Extracted Content", full_json["content"]["full_text"][:500] + "...", height=200)
+
+if __name__ == "__main__":
+    main()
