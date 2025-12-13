@@ -123,9 +123,12 @@ def main():
                         st.markdown(f"**Match Context:**\n> {snippet}")
                     
                     st.text(f"File: {row['filename']}")
-                    # Add PDF Link
+                    # Add PDF Link - USING GITHUB RAW for 100% Reliability on Cloud
                     safe_filename = urllib.parse.quote(row['filename'])
-                    pdf_url = f"app/static/pdfs/{safe_filename}.pdf"
+                    # Base URL for GitHub Raw Content
+                    GITHUB_RAW_BASE = "https://raw.githubusercontent.com/prabhav79/qci-central-finite-curve/main/static/pdfs/"
+                    pdf_url = f"{GITHUB_RAW_BASE}{safe_filename}.pdf"
+                    
                     st.markdown(f'<a href="{pdf_url}" target="_blank" style="text-decoration: none;"><button style="background-color:#4285F4; color:white; border:none; padding:5px 10px; border-radius:5px; cursor:pointer;">📄 Open PDF</button></a>', unsafe_allow_html=True)
 
                     if row['deliverables']:
@@ -256,7 +259,10 @@ def main():
              # Simplest check: Matches a filename in our DF
              if selected_node_id in filtered_df["filename"].values:
                  safe_filename = urllib.parse.quote(selected_node_id)
-                 pdf_url = f"app/static/pdfs/{safe_filename}.pdf"
+                 # Base URL for GitHub Raw Content
+                 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/prabhav79/qci-central-finite-curve/main/static/pdfs/"
+                 pdf_url = f"{GITHUB_RAW_BASE}{safe_filename}.pdf"
+                 
                  st.toast(f"Opening PDF: {selected_node_id}", icon="📄")
                  
                  # Direct JS Open attempt
