@@ -1,4 +1,6 @@
 import streamlit as st
+import logging
+import traceback
 import glob
 import json
 import os
@@ -9,6 +11,13 @@ import base64
 from streamlit_pdf_viewer import pdf_viewer
 
 st.set_page_config(layout="wide", page_title="QCI Central Finite Curve", page_icon="∞")
+
+# Configure logging to file
+logging.basicConfig(
+    filename='app_debug.log', 
+    level=logging.ERROR, 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 # --- DATA LOADING ---
 @st.cache_data
@@ -44,7 +53,8 @@ def load_data():
                 
                 data.append(row)
         except Exception as e:
-            print(f"Error loading {f}: {e}")
+            logging.error(f"Error loading {f}: {e}")
+            # print(f"Error loading {f}: {e}")
             
     return pd.DataFrame(data)
 
@@ -354,4 +364,9 @@ def main():
         render_dashboard()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logging.error("Fatal Application Error", exc_info=True)
+        st.error("🚨 An unexpected error occurred. Please capture this screen and share it with support.")
+        st.code(traceback.format_exc())
