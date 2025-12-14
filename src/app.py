@@ -5,7 +5,7 @@ import glob
 import json
 import os
 import pandas as pd
-from ui_components import render_header, render_metrics, render_knowledge_graph
+# from ui_components import render_header, render_metrics, render_knowledge_graph # Moved to main to prevent startup crash
 import urllib.parse
 import base64
 import urllib.parse
@@ -224,6 +224,7 @@ def render_dashboard():
     # --- METRICS ---
     total_val = filtered_df["value_inr"].sum()
     top_min = filtered_df["ministry_norm"].mode()[0] if not filtered_df.empty else "N/A"
+    from ui_components import render_metrics # Lazy import
     render_metrics(len(filtered_df), total_val, top_min)
     
     st.divider()
@@ -307,6 +308,7 @@ def render_dashboard():
             if e["source"] in visible_node_ids and e["target"] in visible_node_ids:
                 visible_edges.append(e)
 
+        from ui_components import render_knowledge_graph # Lazy import
         selected_node_id = render_knowledge_graph(visible_nodes, visible_edges)
         
         # Handle Graph Selection (PDF Opening & Collapsing)
@@ -355,8 +357,14 @@ def render_dashboard():
                 st.text_area("Extracted Content", full_json["content"]["full_text"][:500] + "...", height=200)
 
 def main():
-    render_header()
-    
+    try:
+        from ui_components import render_header, render_metrics, render_knowledge_graph
+        render_header()
+    except ImportError as e:
+        st.error(f"⚠️ Critical Dependency Error: {e}")
+        st.error("This usually means a library listed in requirements.txt failed to install on the Cloud.")
+        st.stop()
+        
     # Initialize View Mode
     if "view_mode" not in st.session_state:
         st.session_state["view_mode"] = "dashboard"
