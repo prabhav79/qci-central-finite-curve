@@ -8,7 +8,9 @@ import pandas as pd
 from ui_components import render_header, render_metrics, render_knowledge_graph
 import urllib.parse
 import base64
-from streamlit_pdf_viewer import pdf_viewer
+import urllib.parse
+import base64
+# from streamlit_pdf_viewer import pdf_viewer # Moved inside render_pdf_viewer to prevent startup crash
 
 st.set_page_config(layout="wide", page_title="QCI Central Finite Curve", page_icon="∞")
 
@@ -125,6 +127,7 @@ def render_pdf_viewer():
     
     try:
         # We pass the file path directly if it's local
+        from streamlit_pdf_viewer import pdf_viewer
         pdf_viewer(file_path, width=1000, height=1000)
         
         # Download Button (Keep as fallback)
