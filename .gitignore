@@ -30,7 +30,8 @@ venv/
 # Environment Variables
 .env
 
-# Secrets
+# Secrets — never commit API keys or credentials
+# RunPulse API key is in .env (already excluded above)
 service_account.json
 credentials.json
 client_secret.json
