@@ -21,10 +21,14 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+# --- PATHS (absolute so they work on Streamlit Cloud regardless of cwd) ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
+
 # --- DATA LOADING ---
 @st.cache_data
 def load_data():
-    files = glob.glob(os.path.join("data/processed", "*.json"))
+    files = glob.glob(os.path.join(PROCESSED_DIR, "*.json"))
     data = []
     for f in files:
         try:
@@ -51,7 +55,8 @@ def load_data():
                 # Add content fields
                 content = doc.get("content", {})
                 row["full_text"] = content.get("full_text", "")
-                row["deliverables"] = content.get("deliverables", "")
+                # deliverables lives in meta (set by RunPulse ingestion)
+                row["deliverables"] = row.get("deliverables", content.get("deliverables", ""))
                 
                 data.append(row)
         except Exception as e:
@@ -123,7 +128,7 @@ def render_pdf_viewer():
     # This reads the binary file locally (guaranteed to exists since we can download it)
     # and renders it natively in the app using PDF.js logic, bypassing Chrome Security blocks on iframes.
     
-    file_path = f"static/pdfs/{file_id}.pdf"
+    file_path = os.path.join(BASE_DIR, "static", "pdfs", f"{file_id}.pdf")
     
     try:
         # We pass the file path directly if it's local
@@ -352,7 +357,7 @@ def render_dashboard():
                 st.rerun()
 
             # Show Raw JSON Content (Partial)
-            with open(os.path.join("data/processed", f"{selected_file}.json"), "r") as f:
+            with open(os.path.join(PROCESSED_DIR, f"{selected_file}.json"), "r") as f:
                 full_json = json.load(f)
                 st.text_area("Extracted Content", full_json["content"]["full_text"][:500] + "...", height=200)
 
