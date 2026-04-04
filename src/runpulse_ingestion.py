@@ -4,16 +4,13 @@ QCI Central Finite Curve — RunPulse Ingestion Pipeline
 Replaces: Google Vertex AI (Gemini), Google Cloud Vision, EasyOCR
 Provider:  RunPulse (https://runpulse.com) — SOC 2 compliant, zero data retention
 
-Pipeline:
-  1. Upload each Work Order PDF to RunPulse (/extract) — handles OCR, tables, layout
-  2. Apply our QCI Work Order JSON schema (/schema) — returns structured metadata
-  3. Save output to data/processed/<doc_id>.json (same format app.py reads)
+Verified RunPulse SDK pattern (pulse-python-sdk):
+  Step 1. client.extract(file=f)        → ExtractResponse.extraction_id
+  Step 2. client.schema(extraction_id,  → SingleSchemaResponse.schema_output.values
+          schema_config={input_schema})
 
-Usage:
+Usage (run from project root):
   python src/runpulse_ingestion.py
-
-Requirements:
-  RUNPULSE_API_KEY in .env (locally) or Streamlit Cloud Secrets (production)
 """
 
 import os
@@ -26,8 +23,10 @@ from pathlib import Path
 from typing import Optional
 
 from pulse import Pulse
-from pulse.types import ExtractRequestFigureProcessing
 from dotenv import load_dotenv
+
+import sys
+sys.path.insert(0, os.path.dirname(__file__))
 
 from models import (
     WorkOrderDocument,
@@ -46,36 +45,27 @@ load_dotenv()
 RUNPULSE_API_KEY = os.getenv("RUNPULSE_API_KEY")
 if not RUNPULSE_API_KEY:
     raise EnvironmentError(
-        "RUNPULSE_API_KEY not set. Add it to your .env file locally, "
-        "or to Streamlit Cloud Secrets for deployment."
+        "RUNPULSE_API_KEY not set.\n"
+        "  → Locally: add to .env file\n"
+        "  → Streamlit Cloud: add to Secrets panel"
     )
 
-# Source PDFs live in Work Orders/ (relative to project root)
-# Run this script from the project root: python src/runpulse_ingestion.py
-SOURCE_DIR = "Work Orders"
+SOURCE_DIR    = "Work Orders"
 PROCESSED_DIR = "data/processed"
-
-# How long to sleep between documents to be polite to the API (seconds)
-RATE_LIMIT_SLEEP = 2
-
-# Async polling config
-POLL_INTERVAL = 3   # seconds between status checks
-POLL_TIMEOUT = 300  # max seconds to wait per document
+RATE_LIMIT_SLEEP = 1  # seconds between documents
 
 # ---------------------------------------------------------------------------
-# RunPulse schema for QCI Work Orders
+# QCI Work Order extraction schema
 # ---------------------------------------------------------------------------
-# This tells RunPulse exactly what structured fields to extract.
-# The schema matches our WorkOrderMeta + WorkOrderContent Pydantic models.
 WORK_ORDER_SCHEMA = {
     "type": "object",
     "properties": {
         "ministry": {
             "type": "string",
             "description": (
-                "Full name of the Indian Government Ministry or Department "
-                "that issued this work order (e.g. 'Ministry of Personnel, Public Grievances and Pensions', "
-                "'Department of Administrative Reforms and Public Grievances')"
+                "Full name of the Indian Government Ministry or Department that "
+                "issued this work order. E.g. 'Ministry of Personnel, PG and Pensions, "
+                "Deptt. of Administrative Reforms and Public Grievances'."
             ),
         },
         "date": {
@@ -85,41 +75,40 @@ WORK_ORDER_SCHEMA = {
         "value_inr": {
             "type": "number",
             "description": (
-                "Total monetary value of the work order in Indian Rupees (INR). "
-                "Extract as a plain number without commas or currency symbols."
+                "Total monetary value of the work order in Indian Rupees as a plain number. "
+                "No commas, no currency symbols. E.g. 6552000 for Rs. 65,52,000/-."
             ),
         },
         "domains": {
             "type": "array",
             "items": {"type": "string"},
             "description": (
-                "2–5 topic tags describing the subject area of this work order, "
-                "e.g. ['Grievance Redressal', 'Digital Governance', 'PMU Support']"
+                "2–5 topic tags for this work order's subject area. "
+                "E.g. ['Grievance Redressal', 'PMU Support', 'Digital Governance', 'e-Governance']."
             ),
         },
         "project_subject": {
             "type": "string",
             "description": (
-                "The specific subject or title of the project/assignment as stated "
-                "in the work order (e.g. 'CPGRAMS PMU Support for DARPG')."
+                "The specific subject or title of this project as stated in the document. "
+                "E.g. 'Setting up PMU for CPGRAMS with 3 resource persons for one year'."
             ),
         },
         "deliverables": {
             "type": "string",
             "description": (
-                "A concise plain-text summary (max 400 words) of the key deliverables, "
-                "scope of work, and expected outputs described in the work order."
+                "Plain-text summary (under 400 words) of key deliverables, scope of work, "
+                "and expected outputs described in this work order."
             ),
         },
         "full_text_summary": {
             "type": "string",
             "description": (
-                "A comprehensive plain-text summary (max 500 words) of the entire "
-                "work order capturing context, parties involved, obligations, and timeline."
+                "Comprehensive plain-text summary (under 500 words) of the entire work order: "
+                "context, parties, obligations, timelines, and key terms."
             ),
         },
     },
-    "required": ["ministry", "date", "value_inr", "domains", "project_subject", "deliverables", "full_text_summary"],
 }
 
 # ---------------------------------------------------------------------------
@@ -134,109 +123,85 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Core extraction functions
+# Pipeline helpers
 # ---------------------------------------------------------------------------
 
-def extract_with_runpulse(client: Pulse, pdf_path: str) -> Optional[str]:
+def extract_pdf(client: Pulse, pdf_path: str) -> Optional[str]:
     """
-    Upload a PDF to RunPulse and return the extraction_id.
-    Uses async mode for large/scanned documents with polling.
+    Upload PDF to RunPulse synchronously.
     Returns extraction_id on success, None on failure.
     """
     doc_name = os.path.basename(pdf_path)
-    print(f"  📤 Uploading to RunPulse: {doc_name}")
-
     try:
         with open(pdf_path, "rb") as f:
-            submission = client.extract(
-                file=f,
-                figure_processing=ExtractRequestFigureProcessing(description=True),
-                async_=True,  # Always async — some QCI PDFs are large scans
-            )
-
-        job_id = submission.job_id
-        print(f"  ⏳ Job submitted: {job_id} — polling for completion...")
-        log.info(f"JobID {job_id} submitted for {doc_name}")
-
-        # Poll until done
-        elapsed = 0
-        while elapsed < POLL_TIMEOUT:
-            time.sleep(POLL_INTERVAL)
-            elapsed += POLL_INTERVAL
-
-            status = client.jobs.get_job(job_id=job_id)
-            print(f"  ↻  [{elapsed}s] Status: {status.status}")
-
-            if status.status == "completed":
-                extraction_id = status.result.extraction_id
-                print(f"  ✅ Extraction complete: {extraction_id}")
-                log.info(f"JobID {job_id} → extraction_id {extraction_id}")
-                return extraction_id
-
-            elif status.status in ("failed", "canceled"):
-                print(f"  ❌ Job ended with status: {status.status}")
-                log.error(f"JobID {job_id} ended: {status.status}")
-                return None
-
-        print(f"  ⚠️  Timeout after {POLL_TIMEOUT}s for {doc_name}")
-        log.warning(f"Timeout for {doc_name} (job {job_id})")
-        return None
-
+            resp = client.extract(file=f)
+        extraction_id = resp.extraction_id
+        print(f"  ✅ Extracted → {extraction_id}")
+        log.info(f"Extracted '{doc_name}' → {extraction_id}")
+        return extraction_id
     except Exception as e:
         print(f"  ❌ Extract failed: {e}")
-        log.error(f"Extract failed for {doc_name}: {traceback.format_exc()}")
+        log.error(f"Extract failed for '{doc_name}':\n{traceback.format_exc()}")
         return None
 
 
 def apply_schema(client: Pulse, extraction_id: str, doc_name: str) -> Optional[dict]:
     """
-    Apply the QCI Work Order schema to an already-extracted document.
-    Returns a dict of structured fields, or None on failure.
+    Apply QCI Work Order schema to an extracted document.
+    Returns structured values dict or None on failure.
     """
-    print(f"  📋 Applying Work Order schema...")
     try:
-        result = client.schema(
+        schema_resp = client.schema(
             extraction_id=extraction_id,
             schema_config={"input_schema": WORK_ORDER_SCHEMA},
         )
-        # result.output is the structured dict
-        data = result.output if hasattr(result, "output") else result
-        if isinstance(data, str):
-            data = json.loads(data)
-        print(f"  ✅ Schema applied — ministry: {data.get('ministry', 'N/A')}, value: ₹{data.get('value_inr', 0):,.0f}")
+        # Verified path: SingleSchemaResponse.schema_output.values
+        data = schema_resp.schema_output.values
+
+        if not isinstance(data, dict):
+            print(f"  ⚠️  Unexpected schema_output type: {type(data)}")
+            log.warning(f"Unexpected schema_output for {extraction_id}: {type(data)}")
+            return None
+
+        ministry = data.get("ministry", "N/A")
+        value    = data.get("value_inr", 0)
+        print(f"  📋 Ministry : {ministry}")
+        print(f"     Value    : ₹{value:,.0f}" if isinstance(value, (int, float)) else f"     Value    : {value}")
+        print(f"     Date     : {data.get('date', 'N/A')}")
+        log.info(f"Schema OK for {extraction_id}: ministry='{ministry}', value={value}")
         return data
+
     except Exception as e:
-        print(f"  ❌ Schema extraction failed: {e}")
-        log.error(f"Schema failed for extraction {extraction_id}: {traceback.format_exc()}")
+        print(f"  ❌ Schema failed: {e}")
+        log.error(f"Schema failed for extraction {extraction_id}:\n{traceback.format_exc()}")
         return None
 
 
-def build_document(doc_id: str, schema_data: dict) -> WorkOrderDocument:
-    """
-    Assemble a WorkOrderDocument from RunPulse schema output.
-    Matches the exact structure app.py reads from data/processed/*.json.
-    """
+def build_document(doc_id: str, data: dict) -> WorkOrderDocument:
+    """Assemble WorkOrderDocument from RunPulse schema output."""
+    try:
+        value_inr = float(data.get("value_inr") or 0.0)
+    except (TypeError, ValueError):
+        value_inr = 0.0
+
     meta = WorkOrderMeta(
         doc_id=doc_id,
-        ministry=schema_data.get("ministry", "Unknown Ministry"),
-        date=schema_data.get("date"),
-        value_inr=float(schema_data.get("value_inr") or 0.0),
-        domains=schema_data.get("domains", ["General"]),
-        # Extra enriched fields stored in meta for use by app.py
-        project_subject=schema_data.get("project_subject", ""),
-        deliverables=schema_data.get("deliverables", ""),
+        ministry=data.get("ministry", "Unknown Ministry"),
+        date=data.get("date"),
+        value_inr=value_inr,
+        domains=data.get("domains") or ["General"],
+        project_subject=data.get("project_subject", ""),
+        deliverables=data.get("deliverables", ""),
     )
-
     content = WorkOrderContent(
-        full_text=schema_data.get("full_text_summary", ""),
-        tables=[],  # RunPulse table extraction available via /tables endpoint if needed later
+        full_text=data.get("full_text_summary", ""),
+        tables=[],
     )
-
     return WorkOrderDocument(
         doc_id=doc_id,
         meta=meta,
         content=content,
-        graph_nodes=[],  # Auto-computed by app.py from ministry/doc_id
+        graph_nodes=[],
     )
 
 
@@ -247,72 +212,71 @@ def build_document(doc_id: str, schema_data: dict) -> WorkOrderDocument:
 def process_pipeline():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
 
-    # Find all PDFs in Work Orders/
     pdf_files = sorted(glob.glob(os.path.join(SOURCE_DIR, "*.pdf")))
     if not pdf_files:
-        print(f"⚠️  No PDFs found in '{SOURCE_DIR}'. Make sure you run this from the project root.")
+        print(f"⚠️  No PDFs found in '{SOURCE_DIR}/'. Run this from the project root.")
         return
 
-    print(f"\n🚀 RunPulse Ingestion Pipeline")
-    print(f"   Source : {SOURCE_DIR}/ ({len(pdf_files)} PDFs)")
-    print(f"   Output : {PROCESSED_DIR}/")
-    print(f"   Provider: RunPulse (SOC 2, zero data retention)\n")
+    print(f"\n{'═' * 62}")
+    print(f"  QCI Central Finite Curve — RunPulse Ingestion")
+    print(f"  Source  : {SOURCE_DIR}/  ({len(pdf_files)} PDFs)")
+    print(f"  Output  : {PROCESSED_DIR}/")
+    print(f"  Provider: RunPulse — SOC 2, zero data retention")
+    print(f"{'═' * 62}\n")
 
-    # Skip already-processed documents
-    processed_ids = {
-        Path(f).stem for f in glob.glob(os.path.join(PROCESSED_DIR, "*.json"))
-    }
+    processed_ids = {Path(f).stem for f in glob.glob(os.path.join(PROCESSED_DIR, "*.json"))}
+    if processed_ids:
+        print(f"  Skipping {len(processed_ids)} already-processed document(s).\n")
 
-    client = Pulse(api_key=RUNPULSE_API_KEY)
+    client  = Pulse(api_key=RUNPULSE_API_KEY)
+    success = skip = fail = 0
 
-    success_count = 0
-    skip_count = 0
-    fail_count = 0
-
-    for pdf_path in pdf_files:
+    for i, pdf_path in enumerate(pdf_files, 1):
         doc_id = Path(pdf_path).stem
-        print(f"\n{'─' * 60}")
-        print(f"📄 {doc_id}")
+        print(f"\n{'─' * 62}")
+        print(f"  [{i}/{len(pdf_files)}] {doc_id}")
 
         if doc_id in processed_ids:
-            print(f"  ⏭️  Already processed — skipping.")
-            skip_count += 1
+            print(f"  ⏭️  Already processed.")
+            skip += 1
             continue
 
         try:
             # Step 1: Extract (OCR + layout)
-            extraction_id = extract_with_runpulse(client, pdf_path)
+            print(f"  📤 Uploading to RunPulse...")
+            extraction_id = extract_pdf(client, pdf_path)
             if not extraction_id:
-                fail_count += 1
+                fail += 1
                 continue
 
-            # Step 2: Apply our structured schema
-            schema_data = apply_schema(client, extraction_id, doc_id)
-            if not schema_data:
-                fail_count += 1
+            # Step 2: Structured schema
+            data = apply_schema(client, extraction_id, doc_id)
+            if not data:
+                fail += 1
                 continue
 
-            # Step 3: Build model and save JSON
-            doc = build_document(doc_id, schema_data)
+            # Step 3: Build Pydantic model + save JSON
+            doc = build_document(doc_id, data)
             save_json(doc, PROCESSED_DIR)
-
-            success_count += 1
+            success += 1
             log.info(f"SUCCESS: {doc_id}")
 
         except Exception as e:
-            fail_count += 1
-            err = traceback.format_exc()
-            print(f"  ❌ Pipeline error: {e}")
-            log.error(f"FAILED {doc_id}:\n{err}")
+            fail += 1
+            print(f"  ❌ Unexpected error: {e}")
+            log.error(f"Pipeline error for '{doc_id}':\n{traceback.format_exc()}")
 
-        # Rate limiting between documents
         time.sleep(RATE_LIMIT_SLEEP)
 
-    print(f"\n{'═' * 60}")
-    print(f"✅ Done. Processed: {success_count}  Skipped: {skip_count}  Failed: {fail_count}")
-    print(f"   Output in: {PROCESSED_DIR}/")
-    if fail_count:
-        print(f"   ⚠️  Check ingestion.log for error details.")
+    print(f"\n{'═' * 62}")
+    print(f"  DONE")
+    print(f"  ✅ Processed : {success}")
+    print(f"  ⏭️  Skipped   : {skip}")
+    print(f"  ❌ Failed    : {fail}")
+    print(f"  Output: {PROCESSED_DIR}/")
+    if fail:
+        print(f"  ⚠️  Check ingestion.log for details.")
+    print(f"{'═' * 62}\n")
 
 
 if __name__ == "__main__":
