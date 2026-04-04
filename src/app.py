@@ -10,7 +10,7 @@ import urllib.parse
 import base64
 import urllib.parse
 import base64
-# from streamlit_pdf_viewer import pdf_viewer # Moved inside render_pdf_viewer to prevent startup crash
+import re
 
 st.set_page_config(layout="wide", page_title="QCI Central Finite Curve", page_icon="∞")
 
@@ -117,17 +117,25 @@ def load_data():
             
     return pd.DataFrame(data)
 
-def get_snippet(text, query, context=50):
+def get_snippet(text, query, context=80):
+    if not text:
+        return ""
     if not query:
         return text[:200]
     
     idx = text.lower().find(query.lower())
     if idx == -1:
-        return text[:200]
+        return "..." + text[:150].replace("\n", " ") + "..."
         
     start = max(0, idx - context)
     end = min(len(text), idx + len(query) + context)
-    return "..." + text[start:end].replace("\n", " ") + "..."
+    snippet = "..." + text[start:end].replace("\n", " ") + "..."
+    
+    # Apply Highlight
+    pattern = re.compile(re.escape(query), re.IGNORECASE)
+    highlighted = pattern.sub(lambda m: f'<mark style="background-color: #FFD700; color: black; padding: 0 4px; border-radius: 3px; font-weight: bold;">{m.group(0)}</mark>', snippet)
+    
+    return highlighted
 
 def normalize_ministry(name):
     # Normalize variants of Ministry name
@@ -259,22 +267,46 @@ def render_dashboard():
         st.subheader(f"Search Results ({len(search_results)})")
         
         for _, row in search_results.iterrows():
-            with st.expander(f"📄 {row['display_subject']} ({row['date']})"):
+            # EXACT vs SEMANTIC Badge
+            # Need to safely check string contains
+            def safe_contains(text, q):
+                 if text is None or pd.isna(text): return False
+                 return str(q).lower() in str(text).lower()
+
+            is_exact = safe_contains(row['full_text'], search_query) or \
+                       safe_contains(row['ministry'], search_query) or \
+                       safe_contains(row['filename'], search_query) or \
+                       safe_contains(row['deliverables'], search_query) or \
+                       safe_contains(row['display_subject'], search_query)
+            
+            if is_exact:
+                badge = "🟢 **Exact Match**"
+            else:
+                score = row.get('sim_score', 0)
+                badge = f"🧠 **AI Semantic Match ({score*100:.0f}%)**"
+
+            with st.expander(f"📄 {row['filename']}"):
+                st.markdown(f"**Match Type:** {badge}")
+                st.markdown(f"**Subject:** {row['display_subject']} ({row['date']})")
+                st.divider()
+                
                 c1, c2 = st.columns([3, 1])
                 with c1:
                     # If query matches deliverables, prioritize showing that snippet
-                    if row['deliverables'] and search_query.lower() in row['deliverables'].lower():
+                    if safe_contains(row['deliverables'], search_query):
                         st.markdown("**Matched in Deliverables:**")
                         snippet = get_snippet(row['deliverables'], search_query)
-                        st.info(f"> {snippet}")
+                        st.markdown(f"> {snippet}", unsafe_allow_html=True)
                     else:
                         snippet = get_snippet(row['full_text'], search_query)
-                        st.markdown(f"**Match Context:**\n> {snippet}")
+                        if not is_exact:
+                            st.info("No exact text match. Document retained due to high conceptual similarity to your query.")
+                        st.markdown(f"**Match Context:**\n> {snippet}", unsafe_allow_html=True)
                     
-                    st.text(f"File: {row['filename']}")
+                    st.write("")
                     
                     # Viewer Button
-                    if st.button(f"📄 Open PDF", key=f"btn_{row['filename']}"):
+                    if st.button(f"📄 Open Document", key=f"btn_{row['filename']}"):
                         st.session_state["active_pdf_id"] = row['filename']
                         st.session_state["view_mode"] = "viewer"
                         st.rerun()
