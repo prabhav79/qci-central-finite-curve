@@ -47,6 +47,28 @@ logging.basicConfig(
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROCESSED_DIR = os.path.join(BASE_DIR, "data", "processed")
 
+import numpy as np
+
+# --- SEMANTIC SEARCH SETUP ---
+@st.cache_resource
+def get_embedding_model():
+    try:
+        from sentence_transformers import SentenceTransformer
+        # all-MiniLM-L6-v2 is fast, offline, and lightweight (~80MB)
+        return SentenceTransformer('all-MiniLM-L6-v2')
+    except Exception as e:
+        logging.error(f"Failed to load sentence-transformers: {e}")
+        return None
+
+def cosine_similarity(vec1, vec2):
+    if vec1 is None or vec2 is None:
+        return 0.0
+    norm1 = np.linalg.norm(vec1)
+    norm2 = np.linalg.norm(vec2)
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return float(np.dot(vec1, vec2) / (norm1 * norm2))
+
 # --- DATA LOADING ---
 @st.cache_data
 def load_data():
@@ -79,6 +101,14 @@ def load_data():
                 row["full_text"] = content.get("full_text", "")
                 # deliverables lives in meta (set by RunPulse ingestion)
                 row["deliverables"] = row.get("deliverables", content.get("deliverables", ""))
+                
+                # Precompute embedding if model is available
+                model = get_embedding_model()
+                if model:
+                    text_to_embed = f"Subject: {row['subject']}. Deliverables: {row['deliverables']}. Content: {row['full_text']}"
+                    row["embedding"] = model.encode(text_to_embed)
+                else:
+                    row["embedding"] = None
                 
                 data.append(row)
         except Exception as e:
@@ -187,17 +217,44 @@ def render_dashboard():
         st.warning("No data found in data/processed. Please run ingestion first.")
         return
 
-    search_query = st.text_input("🔍 Search Database (Ministry, Amount, Scope/Deliverables...)", "")
+    search_query = st.text_input("🔍 Search Database (Natural Language, Ministry, Scope/Deliverables...)", "")
     
     if search_query:
-        # Search across relevant columns including Deliverables
-        mask = (
+        # Determine if we can use semantic search
+        use_semantic = "embedding" in df.columns and not df["embedding"].isnull().all()
+        model = get_embedding_model() if use_semantic else None
+        
+        # Calculate Exact/Lexical matches
+        exact_mask = (
             df["ministry"].str.contains(search_query, case=False, na=False) | 
             df["filename"].str.contains(search_query, case=False, na=False) |
             df["full_text"].str.contains(search_query, case=False, na=False) |
-            df["display_subject"].str.contains(search_query, case=False, na=False)
+            df["display_subject"].str.contains(search_query, case=False, na=False) |
+            df["deliverables"].str.contains(search_query, case=False, na=False)
         )
-        search_results = df[mask]
+        
+        if use_semantic and model:
+            query_vec = model.encode(search_query)
+            
+            # Calculate similarities
+            similarities = df["embedding"].apply(lambda vec: cosine_similarity(query_vec, vec) if vec is not None else 0.0)
+            
+            # Semantic matches (threshold contextually tuned for MiniLM, usually 0.25+ is somewhat relevant)
+            semantic_mask = similarities >= 0.25
+            
+            # Combine Exact and Semantic
+            mask = exact_mask | semantic_mask
+            search_results = df[mask].copy()
+            
+            # Attach score for sorting
+            search_results["sim_score"] = similarities[mask]
+            # Boost exact matches slightly so they stay near top
+            search_results.loc[exact_mask & mask, "sim_score"] += 1.0
+            
+            search_results = search_results.sort_values(by="sim_score", ascending=False)
+        else:
+            # Fallback pure lexical search
+            search_results = df[exact_mask]
         
         st.subheader(f"Search Results ({len(search_results)})")
         

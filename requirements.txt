@@ -6,3 +6,6 @@ python-dotenv
 streamlit-pdf-viewer
 pulse-python-sdk
 PyGithub
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+sentence-transformers
