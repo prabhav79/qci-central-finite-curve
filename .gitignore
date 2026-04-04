@@ -42,3 +42,6 @@ data/raw/
 data/quarantine/
 data/temp_images/
 analysis.txt
+
+.streamlit/secrets.toml
+

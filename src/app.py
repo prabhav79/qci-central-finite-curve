@@ -14,6 +14,28 @@ import base64
 
 st.set_page_config(layout="wide", page_title="QCI Central Finite Curve", page_icon="∞")
 
+def check_password():
+    def password_entered():
+        target_pw = os.getenv("APP_PASSWORD")
+        if not target_pw and hasattr(st, "secrets"):
+            target_pw = st.secrets.get("APP_PASSWORD", "default")
+            
+        if st.session_state["password"] == target_pw:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.text_input("Please enter the password to access the QCI Dashboard", type="password", on_change=password_entered, key="password")
+        return False
+    elif not st.session_state["password_correct"]:
+        st.text_input("Please enter the password to access the QCI Dashboard", type="password", on_change=password_entered, key="password")
+        st.error("😕 Password incorrect")
+        return False
+    return True
+
+
 # Configure logging to file
 logging.basicConfig(
     filename='app_debug.log', 
@@ -123,31 +145,39 @@ def render_pdf_viewer():
     with c2:
         st.subheader(f"📄 Viewing: {shorten_label(file_id)}")
 
-    # PDF Display
-    # STRATEGY: Streamlit PDF Viewer Component
-    # This reads the binary file locally (guaranteed to exists since we can download it)
-    # and renders it natively in the app using PDF.js logic, bypassing Chrome Security blocks on iframes.
+    # Dynamic File Viewer (Supports PDFs, Images, and downloads for others)
+    search_pattern = os.path.join(BASE_DIR, "Work Orders", f"{file_id}.*")
+    matching_files = glob.glob(search_pattern)
     
-    file_path = os.path.join(BASE_DIR, "static", "pdfs", f"{file_id}.pdf")
-    
-    try:
-        # We pass the file path directly if it's local
-        from streamlit_pdf_viewer import pdf_viewer
-        pdf_viewer(file_path, width=1000, height=1000)
+    if not matching_files:
+        search_pattern_fallback = os.path.join(BASE_DIR, "static", "pdfs", f"{file_id}.*")
+        matching_files = glob.glob(search_pattern_fallback)
+
+    if not matching_files:
+        st.error(f"File not found on server for: {file_id}")
+        return
         
-        # Download Button (Keep as fallback)
+    file_path = matching_files[0]
+    ext = os.path.splitext(file_path)[1].lower()
+
+    try:
+        if ext == ".pdf":
+            from streamlit_pdf_viewer import pdf_viewer
+            pdf_viewer(file_path, width=1000, height=1000)
+        elif ext in [".png", ".jpg", ".jpeg"]:
+            st.image(file_path, use_column_width=True)
+        else:
+            st.info(f"📄 The document is a {ext} file which cannot be displayed inline.")
+        
         with open(file_path, "rb") as f:
             st.download_button(
-                label="⬇️ Download PDF",
+                label="⬇️ Download Document",
                 data=f,
-                file_name=f"{file_id}.pdf",
-                mime="application/pdf"
+                file_name=os.path.basename(file_path)
             )
         
-    except FileNotFoundError:
-        st.error(f"File not found on server: {file_path}")
     except Exception as e:
-        st.error(f"Error loading PDF: {e}")
+        st.error(f"Error loading document: {e}")
 
 def render_dashboard():
     # --- SEARCH ENGINE ---
@@ -232,6 +262,67 @@ def render_dashboard():
     from ui_components import render_metrics # Lazy import
     render_metrics(len(filtered_df), total_val, top_min)
     
+    # --- UPLOAD SECTION ---
+    st.sidebar.divider()
+    st.sidebar.subheader("📤 Add New Document")
+    uploaded_file = st.sidebar.file_uploader("Upload document for AI OCR via RunPulse", type=None)
+    if uploaded_file is not None:
+        if st.sidebar.button("Process & Upload To GitHub"):
+            with st.spinner("Extracting via RunPulse AI..."):
+                import sys
+                if BASE_DIR not in sys.path:
+                    sys.path.insert(0, BASE_DIR)
+                    
+                from src.runpulse_ingestion import extract_pdf, apply_schema, build_document
+                from src.github_sync import push_to_github
+                from pulse import Pulse
+                
+                api_key = os.getenv("RUNPULSE_API_KEY")
+                if not api_key and hasattr(st, "secrets"):
+                     api_key = st.secrets.get("RUNPULSE_API_KEY")
+                
+                if not api_key:
+                     st.sidebar.error("RunPulse API key missing")
+                else:
+                    pulse_client = Pulse(api_key=api_key)
+                    
+                    doc_id = os.path.splitext(uploaded_file.name)[0]
+                    ext = os.path.splitext(uploaded_file.name)[1]
+                    
+                    # Ensure temp folder exists
+                    os.makedirs(os.path.join(BASE_DIR, "data", "temp"), exist_ok=True)
+                    temp_path = os.path.join(BASE_DIR, "data", "temp", uploaded_file.name)
+                    
+                    with open(temp_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    
+                    try:
+                        extraction_id = extract_pdf(pulse_client, temp_path)
+                        if extraction_id:
+                            schema_data = apply_schema(pulse_client, extraction_id, doc_id)
+                            if schema_data:
+                                doc = build_document(doc_id, schema_data)
+                                # Serialize
+                                if hasattr(doc, "model_dump"):
+                                    json_dict = doc.model_dump()
+                                else:
+                                    json_dict = doc.dict()
+                                json_str = json.dumps(json_dict, indent=2, default=str)
+                                
+                                st.sidebar.success(f"Extracted! Value: ₹{doc.meta.value_inr:,.0f}")
+                                
+                                # Push to github
+                                push_to_github(doc_id, ext, uploaded_file.getvalue(), json_str)
+                            else:
+                                st.sidebar.error("Failed to apply QCI Schema.")
+                        else:
+                            st.sidebar.error("Failed to extract document contents.")
+                    except Exception as e:
+                         st.sidebar.error(f"Error: {e}")
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+
     st.divider()
     
     # --- KNOWLEDGE GRAPH CONSTRUCTION ---
@@ -362,6 +453,9 @@ def render_dashboard():
                 st.text_area("Extracted Content", full_json["content"]["full_text"][:500] + "...", height=200)
 
 def main():
+    if not check_password():
+         st.stop()
+         
     try:
         from ui_components import render_header, render_metrics, render_knowledge_graph
         render_header()
