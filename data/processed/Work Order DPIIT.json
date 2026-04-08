@@ -1,0 +1,21 @@
+{
+  "doc_id": "Work Order DPIIT",
+  "meta": {
+    "ministry": "Ministry of Commerce & Industry, Department for Promotion of Industry and Internal Trade",
+    "date": "2022-10-31",
+    "value_inr": 0.0,
+    "domains": [
+      "Quality Assessment",
+      "Certification",
+      "Digital Governance"
+    ],
+    "doc_id": "Work Order DPIIT",
+    "project_subject": "CIM Dashboard Task ID 4732- Assessment and Certification of Quality and Agility in DPIIT",
+    "deliverables": "Conduct a pilot project for Assessment and Certification of Quality and Agility in DPIIT, with QCI implementing the project while DPIIT bears the financial expenses and DARPG owns the certification to Ministries"
+  },
+  "content": {
+    "full_text": "This work order from the Ministry of Commerce & Industry's Department for Promotion of Industry and Internal Trade, dated 31st October 2022, assigns Quality Council of India (QCI) to implement a pilot project for Assessment and Certification of Quality and Agility in DPIIT (Task ID 4732). The project follows a meeting held on 17.02.2022 between SIIT and Secretary DARPG, where it was decided that DPIIT would bear the financial expenses while DARPG would own the certification to Ministries. Secretary DARPG approved the revised proposal via email dated May 19, 2022, directing QCI to proceed. The terms and conditions for financial expenses will follow the proposal approved by DARPG.",
+    "tables": []
+  },
+  "graph_nodes": []
+}
