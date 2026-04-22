@@ -1,0 +1,67 @@
+# Keep the build context lean and reproducible.
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# Git / VCS
+.git/
+.github/
+.gitignore
+.gitattributes
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Secrets / env
+.env
+.env.local
+.env.*.local
+
+# Railway / Warp metadata
+.railway/
+.warp/
+
+# Large data that the image does NOT need at build time.
+# The seed script fetches these from Railway blob at runtime.
+Work Orders/
+static/
+data/processed/
+data/extracted_text/
+data/raw/
+data/quarantine/
+data/temp/
+data/temp_images/
+*.pdf
+*.docx
+*.xlsx
+
+# Node / Next.js (frontend has its own image)
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+node_modules/
+
+# Tests & examples
+tests/
+docs/
+examples/
+
+# Local dev helpers
+docker-compose*.yml
+*.md
+!README.md
