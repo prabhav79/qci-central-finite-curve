@@ -42,7 +42,9 @@ class Settings(BaseSettings):
     # so the vectors fit the document_chunks.embedding vector(768) column.
     gemini_embedding_model: str = "gemini-embedding-001"
     gemini_embedding_dim: int = 768
-    gemini_generation_model: str = "gemini-1.5-flash"
+    # gemini-flash-latest is a Google-maintained alias that tracks the newest
+    # production-ready Flash; avoids version drift and 429s we hit on 1.5/2.0/2.5.
+    gemini_generation_model: str = "gemini-flash-latest"
 
     # --- OCR ---
     runpulse_api_key: str = Field(..., description="RunPulse API key for OCR / schema extraction")
