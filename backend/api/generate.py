@@ -13,14 +13,16 @@ import logging
 from typing import Any, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.db.models import Generation
 from backend.db.session import get_db
 from backend.llm.generation import generate_draft
 from backend.rag.retrieval import retrieve_chunks
+from backend.services.docx_export import markdown_to_docx, safe_filename
 
 log = logging.getLogger(__name__)
 
@@ -119,4 +121,44 @@ def get_generation(
         model_used=meta.get("model_used", "unknown"),
         retrieval_count=meta.get("retrieval_count", 0),
         retry_count=meta.get("retry_count", 0),
+    )
+
+
+class GenerateExportRequest(BaseModel):
+    # Optional override so the frontend can send the edited markdown instead of
+    # the original LLM output.
+    draft_md: str | None = None
+
+
+@router.post("/{generation_id}/export")
+def post_export(
+    generation_id: UUID,
+    body: GenerateExportRequest | None = None,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Stream a .docx of the (optionally edited) draft for this generation."""
+    row = db.get(Generation, generation_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="generation not found")
+
+    markdown = (body.draft_md if body and body.draft_md else row.draft_md) or ""
+    if not markdown.strip():
+        raise HTTPException(status_code=422, detail="nothing to export")
+
+    # Stamp the export timestamp so the audit trail reflects the first export.
+    if row.exported_at is None:
+        row.exported_at = func.now()
+        db.add(row)
+        db.commit()
+
+    blob = markdown_to_docx(markdown, filename_hint=row.doc_type)
+    fname = safe_filename(f"QCI_{row.doc_type}_{row.id.hex[:8]}")
+
+    return Response(
+        content=blob,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{fname}"',
+            "X-Generation-Id": str(row.id),
+        },
     )
