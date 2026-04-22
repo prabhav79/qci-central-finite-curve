@@ -36,17 +36,17 @@ Thumbs.db
 .railway/
 .warp/
 
-# Large data that the image does NOT need at build time.
-# The seed script fetches these from Railway blob at runtime.
-Work Orders/
-static/
-data/processed/
+# Phase 0: the existing 24 PDFs + their processed JSONs ship with the image
+# because the container's filesystem is the Phase 0 blob store (see backend/storage/blob.py).
+# Swap to S3 in Phase 3 and these get excluded.
+#   Work Orders/
+#   static/
+#   data/processed/
 data/extracted_text/
 data/raw/
 data/quarantine/
 data/temp/
 data/temp_images/
-*.pdf
 *.docx
 *.xlsx
 
