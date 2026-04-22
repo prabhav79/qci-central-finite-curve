@@ -67,7 +67,10 @@ def _embed_one_batch(texts: list[str]) -> list[list[float]]:
     resp = _client().models.embed_content(
         model=settings.gemini_embedding_model,
         contents=texts,
-        config=genai_types.EmbedContentConfig(task_type="RETRIEVAL_DOCUMENT"),
+        config=genai_types.EmbedContentConfig(
+            task_type="RETRIEVAL_DOCUMENT",
+            output_dimensionality=settings.gemini_embedding_dim,
+        ),
     )
 
     if not resp.embeddings or len(resp.embeddings) != len(texts):
@@ -97,10 +100,14 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 def embed_query(text: str) -> list[float]:
     """Embed a single user query. Uses RETRIEVAL_QUERY task type for asymmetric retrieval."""
+    settings = get_settings()
     resp = _client().models.embed_content(
-        model=get_settings().gemini_embedding_model,
+        model=settings.gemini_embedding_model,
         contents=text,
-        config=genai_types.EmbedContentConfig(task_type="RETRIEVAL_QUERY"),
+        config=genai_types.EmbedContentConfig(
+            task_type="RETRIEVAL_QUERY",
+            output_dimensionality=settings.gemini_embedding_dim,
+        ),
     )
     if not resp.embeddings:
         raise EmbeddingError("Gemini returned no embedding for the query")

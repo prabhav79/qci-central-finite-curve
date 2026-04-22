@@ -37,7 +37,11 @@ class Settings(BaseSettings):
 
     # --- LLM ---
     gemini_api_key: str = Field(..., description="Google AI Studio API key (Gemini Flash free tier)")
-    gemini_embedding_model: str = "text-embedding-004"
+    # AI Studio v1beta supports gemini-embedding-001 (3072-dim by default).
+    # We request output_dimensionality=768 via Matryoshka Representation Learning
+    # so the vectors fit the document_chunks.embedding vector(768) column.
+    gemini_embedding_model: str = "gemini-embedding-001"
+    gemini_embedding_dim: int = 768
     gemini_generation_model: str = "gemini-1.5-flash"
 
     # --- OCR ---
