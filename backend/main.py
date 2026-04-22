@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from backend.api import generate as generate_api
 from backend.config import get_settings
 from backend.db.session import get_db
 
@@ -41,6 +42,9 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
     )
+
+    # Routers
+    app.include_router(generate_api.router)
 
     @app.get("/health", tags=["meta"])
     def health(db: Session = Depends(get_db)) -> dict[str, Any]:
