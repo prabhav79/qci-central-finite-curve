@@ -14,6 +14,8 @@ from typing import Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response
+
+from backend.api.auth import get_current_session
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -63,6 +65,7 @@ class GenerateResponse(BaseModel):
 def post_generate(
     body: GenerateRequest,
     db: Session = Depends(get_db),
+    _session: dict = Depends(get_current_session),
 ) -> GenerateResponse:
     chunks = retrieve_chunks(db, body.prompt, top_k=body.top_k)
     if not chunks:
@@ -107,6 +110,7 @@ def post_generate(
 def get_generation(
     generation_id: UUID,
     db: Session = Depends(get_db),
+    _session: dict = Depends(get_current_session),
 ) -> GenerateResponse:
     row = db.get(Generation, generation_id)
     if row is None:
@@ -135,6 +139,7 @@ def post_export(
     generation_id: UUID,
     body: GenerateExportRequest | None = None,
     db: Session = Depends(get_db),
+    _session: dict = Depends(get_current_session),
 ) -> Response:
     """Stream a .docx of the (optionally edited) draft for this generation."""
     row = db.get(Generation, generation_id)
