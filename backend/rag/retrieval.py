@@ -38,20 +38,47 @@ def retrieve_chunks(
     *,
     top_k: int | None = None,
     max_unique_docs: int = 5,
+    ministries: list[str] | None = None,
+    min_value: float | None = None,
+    max_value: float | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> list[RetrievedChunk]:
-    """Top-k nearest chunks, then dedupe so no single doc dominates the context.
-
-    pgvector's cosine distance operator is `<=>`; distance is in [0, 2] and
-    cosine similarity is `1 - (distance / 2)`. We return similarity because
-    users expect "higher is better".
+    """Top-k nearest chunks with metadata filtering.
+    
+    Filters are applied before the LIMIT to ensure we get relevant results
+    even with strict metadata constraints.
     """
     k = top_k or get_settings().retrieval_top_k
-
     query_vec = embed_query(query)
 
-    # Fetch a few more than top_k so we still have something after per-doc dedup.
+    binds: dict[str, Any] = {"qv": str(query_vec), "limit": k * 3}
+    clauses = ["c.embedding IS NOT NULL", "d.status = 'ready'"]
+
+    if ministries:
+        clauses.append("d.ministry = ANY(:ministries)")
+        binds["ministries"] = ministries
+    
+    if min_value is not None:
+        clauses.append("d.value_inr >= :min_value")
+        binds["min_value"] = min_value
+    
+    if max_value is not None:
+        clauses.append("d.value_inr <= :max_value")
+        binds["max_value"] = max_value
+    
+    if start_date:
+        clauses.append("d.issued_on >= :start_date")
+        binds["start_date"] = start_date
+    
+    if end_date:
+        clauses.append("d.issued_on <= :end_date")
+        binds["end_date"] = end_date
+
+    where_str = " AND ".join(clauses)
+
     sql = text(
-        """
+        f"""
         SELECT c.document_id,
                d.doc_id,
                c.chunk_index,
@@ -63,22 +90,20 @@ def retrieve_chunks(
                d.blob_key
         FROM document_chunks c
         JOIN documents d ON d.id = c.document_id
-        WHERE c.embedding IS NOT NULL
-          AND d.status = 'ready'
+        WHERE {where_str}
         ORDER BY c.embedding <=> cast(:qv as vector)
         LIMIT :limit
         """
     )
-    rows = db.execute(sql, {"qv": str(query_vec), "limit": k * 3}).fetchall()
+    
+    rows = db.execute(sql, binds).fetchall()
 
     out: list[RetrievedChunk] = []
     per_doc_count: dict[UUID, int] = {}
     for r in rows:
-        # Greedy per-doc cap so the prompt shows variety across sources.
-        # Each doc contributes at most 2 chunks; stop entirely once we have
-        # max_unique_docs distinct sources.
         seen_docs = len(per_doc_count)
         count_for_this_doc = per_doc_count.get(r.document_id, 0)
+        
         if r.document_id not in per_doc_count and seen_docs >= max_unique_docs:
             continue
         if count_for_this_doc >= 2:
