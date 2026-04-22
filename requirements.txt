@@ -1,11 +1,38 @@
-streamlit
-pandas
-streamlit-agraph
-numpy
-python-dotenv
-streamlit-pdf-viewer
-pulse-python-sdk
-PyGithub
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
-sentence-transformers
+# QCI Central Finite Curve v2.0 — Phase 0 (Generation Demo on Railway)
+# Python 3.11+
+
+# --- Web framework ---
+fastapi>=0.115,<0.120
+uvicorn[standard]>=0.32,<0.40
+python-multipart>=0.0.12
+
+# --- Data layer ---
+SQLAlchemy>=2.0,<2.1
+alembic>=1.13,<1.15
+psycopg2-binary>=2.9,<3.0
+pgvector>=0.3,<0.5
+
+# --- Config & validation ---
+pydantic>=2.9,<3.0
+pydantic-settings>=2.5,<3.0
+
+# --- Auth (demo-tier only; SSO in Phase 3) ---
+python-jose[cryptography]>=3.3,<4.0
+passlib[bcrypt]>=1.7,<2.0
+
+# --- Async worker ---
+celery[redis]>=5.4,<6.0
+redis>=5.0,<6.0
+
+# --- LLM / embeddings ---
+google-genai>=0.5,<2.0
+tenacity>=9.0,<10.0
+
+# --- Document processing ---
+pypdf>=5.0,<6.0
+python-docx>=1.1,<2.0
+pulse-python-sdk>=0.4,<2.0
+
+# --- HTTP / storage ---
+httpx>=0.27,<0.30
+boto3>=1.35,<2.0   # S3-compatible blob storage (Railway volumes later swap to S3)
