@@ -45,3 +45,29 @@ analysis.txt
 
 .streamlit/secrets.toml
 
+# Node / monorepo
+node_modules/
+.npm/
+.next/
+out/
+.turbo/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
+
+# Local draft binary storage (dev)
+storage/dev/
+
+# Python API venv (apps/api)
+apps/api/.venv/
+apps/api/**/__pycache__/
+
+# Logs
+*.log
+app_debug.log
+ingestion.log
+
+
+apps/web/public/superdoc-workers/
+
