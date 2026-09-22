@@ -30,7 +30,7 @@ Streamlit under `src/` is FROZEN legacy demo.
 | API | `apps/api` FastAPI, file drafts in `storage/dev/drafts` |
 | Doc worker | `apps/doc-worker` Node + `@superdoc-dev/sdk` |
 | Shared | `packages/shared-types`, `qci-seed`, `doc-fixtures` |
-| Corpus | `data/processed/*.json` (19 docs, 59 keyword chunks) |
+| Corpus | data/processed + Work Orders DOCX/PDF extract (~48 docs, ~1195 chunks) |
 
 ## SuperDoc critical facts
 1. Never SSR SuperDoc — dynamic import with `ssr: false`
@@ -66,13 +66,18 @@ If ports busy (WinError 10013 / EADDRINUSE): kill PIDs listening on 8000/8100 th
 - Corpus: `/corpus/stats`, `/corpus/search`, `/rag/query`, `/corpus/reload`
 - Health: `/integrations/health`
 
+## Recent progress
+- Expanded corpus to Work Orders DOCX/PDF (pypdf/python-docx) on top of 19 processed JSON
+- RAG panel: Insert into draft citation action (SuperDoc insert / clipboard fallback)
+- MemPalace wing central_finite_curve kept updated
+
 ## Done
 Monorepo on feat/cfc-v4-superdoc; SuperDoc workerUrls fix; versioned drafts; two-tier approval; doc-worker SDK seed; keyword RAG panel; smoke tests.
 
 ## Next
 1. Postgres + JWT auth (replace X-CFC-User)
 2. Ingest remaining Work Order PDFs into corpus
-3. Agent that edits open SuperDoc from RAG
+3. Deeper agent that multi-edits SuperDoc from RAG (basic citation insert exists)
 4. Hocuspocus collab
 5. Railway deploy + SuperDoc commercial license
 
