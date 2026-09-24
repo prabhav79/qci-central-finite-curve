@@ -17,12 +17,21 @@ const outDir = path.join(webRoot, "public", "superdoc-workers");
 
 // SuperDoc's real compiled CSS. public/superdoc-style.css previously held a
 // verbatim copy of @superdoc-dev/react's own style.css, which is itself just
-// a bundler re-export stub (`@import 'superdoc/style.css';`) — that import
-// specifier only resolves inside a bundler, not as a literal browser fetch
-// against a static file, so it 404'd at runtime and SuperDoc's editor never
-// got its theme (unstyled toolbar buttons, black canvas). The real CSS lives
-// in the engine package itself.
-const cssSrc = path.join(assetsDir, "..", "style.css");
+// a bundler re-export stub (`@import 'superdoc/style.css';`). That specifier
+// only resolves inside a bundler via the `superdoc` package's own
+// package.json "exports" map (`"./style.css": "./dist/style.css"`) — a
+// browser fetching it as a literal static file 404s, so SuperDoc's theme
+// never applied (unstyled toolbar text, oversized unconstrained icon SVGs,
+// black canvas).
+//
+// The correct source is the unscoped `superdoc` package (the actual runtime
+// UI/editor library — confirmed by its console version log matching, and by
+// its Vue scoped-style `data-v-*` hashes matching the live-rendered DOM).
+// NOT `@superdoc/docx-engine` (a separate, differently-versioned internal
+// dependency that also happens to ship a style.css with plausible-looking
+// but non-matching scope hashes — copying from there was tried first and
+// silently applied zero rules to the live component tree).
+const cssSrc = path.join(repoRoot, "node_modules", "superdoc", "dist", "style.css");
 const cssOut = path.join(webRoot, "public", "superdoc-style.css");
 
 const mapping = [
