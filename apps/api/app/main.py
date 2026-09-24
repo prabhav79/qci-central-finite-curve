@@ -582,7 +582,18 @@ def auth_verify(token: str, response: Response) -> dict[str, Any]:
 
 @app.post("/auth/logout")
 def auth_logout(response: Response) -> dict[str, Any]:
-    response.delete_cookie("cfc_session", path="/")
+    # Must match the attributes the cookie was set with (see /auth/verify) —
+    # a deleting Set-Cookie that doesn't specify SameSite=None; Secure is
+    # silently dropped by browsers when it arrives via a cross-site fetch
+    # response (web and API are separate Railway subdomains), so logout
+    # would appear to succeed but leave the session cookie intact.
+    cookie_secure = os.environ.get("CFC_COOKIE_SECURE", "false").lower() == "true"
+    response.delete_cookie(
+        "cfc_session",
+        path="/",
+        secure=cookie_secure,
+        samesite="none" if cookie_secure else "lax",
+    )
     return {"ok": True}
 
 
