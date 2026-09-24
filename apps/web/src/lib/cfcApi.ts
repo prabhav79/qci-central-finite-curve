@@ -166,13 +166,14 @@ export async function apiJson<T>(
 
 export async function createDraft(
   persona: PersonaKey,
-  title = "CPGRAMS PMU Extension — CFC Draft",
+  title: string,
+  templateCode = "WO_EXTENSION",
 ) {
   return apiJson<{ draft: DraftRecord; session: DraftSession }>("/drafts", persona, {
     method: "POST",
     body: JSON.stringify({
       title,
-      template_code: "WO_EXTENSION",
+      template_code: templateCode,
       maker_employee_id: "6281",
     }),
   });

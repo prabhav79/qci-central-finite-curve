@@ -16,7 +16,10 @@ app.use(
     origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
   }),
 );
-app.use(express.json({ limit: "4mb" }));
+// Base64-encoded DOCX bytes travel in the JSON body now (see the
+// cross-service filesystem note below), so this needs headroom beyond a
+// typical raw file size.
+app.use(express.json({ limit: "40mb" }));
 
 app.get("/health", (_req, res) => {
   res.json({
@@ -32,11 +35,18 @@ type SeedBody = {
   titleHint?: string;
   tracked?: boolean;
   sourcePath?: string;
+  /** Base64 DOCX bytes — use this instead of sourcePath when the caller
+   * (cfc-api) runs in a different container/filesystem than doc-worker. */
+  sourceBase64?: string;
 };
 
 /**
  * Headless DOCX seed:
- * open template (or sourcePath), optional text replace, save to storage/dev/doc-worker.
+ * open template (or sourcePath/sourceBase64), optional text replace, save
+ * to storage/dev/doc-worker. Response always includes `dataBase64` — the
+ * caller should use that instead of `absolute`/`output`, which only
+ * resolve on this container's own filesystem and are kept for local dev
+ * convenience only.
  */
 app.post("/internal/docx/seed", async (req, res) => {
   const body = (req.body || {}) as SeedBody;
@@ -45,19 +55,23 @@ app.post("/internal/docx/seed", async (req, res) => {
     body.replace ?? "Quality Council of India (CFC Generated Draft)",
   );
   const tracked = body.tracked !== false;
-  const sourcePath = body.sourcePath
-    ? path.isAbsolute(body.sourcePath)
-      ? body.sourcePath
-      : path.join(ROOT, body.sourcePath)
-    : TEMPLATE;
   const outName = `seed-${Date.now()}.docx`;
   const outPath = path.join(OUT_DIR, outName);
 
   let client: ReturnType<typeof createSuperDocClient> | null = null;
+  let sourcePath = body.sourcePath
+    ? path.isAbsolute(body.sourcePath)
+      ? body.sourcePath
+      : path.join(ROOT, body.sourcePath)
+    : TEMPLATE;
 
   try {
-    await fs.access(sourcePath);
     await fs.mkdir(OUT_DIR, { recursive: true });
+    if (body.sourceBase64) {
+      sourcePath = path.join(OUT_DIR, `seed-in-${Date.now()}.docx`);
+      await fs.writeFile(sourcePath, Buffer.from(body.sourceBase64, "base64"));
+    }
+    await fs.access(sourcePath);
 
     client = createSuperDocClient({
       user: { name: "CFC Doc Worker", email: "doc-worker@cfc.local" },
@@ -124,6 +138,7 @@ app.post("/internal/docx/seed", async (req, res) => {
     }
 
     const stat = await fs.stat(outPath);
+    const dataBase64 = (await fs.readFile(outPath)).toString("base64");
     res.json({
       ok: true,
       replaced,
@@ -134,6 +149,7 @@ app.post("/internal/docx/seed", async (req, res) => {
       bytes: stat.size,
       output: path.relative(ROOT, outPath).split(path.sep).join("/"),
       absolute: outPath,
+      dataBase64,
       titleHint: body.titleHint || "Worker-seeded draft",
     });
   } catch (error) {
@@ -145,6 +161,7 @@ app.post("/internal/docx/seed", async (req, res) => {
       await fs.mkdir(OUT_DIR, { recursive: true });
       await fs.copyFile(sourcePath, outPath);
       const stat = await fs.stat(outPath);
+      const dataBase64 = (await fs.readFile(outPath)).toString("base64");
       res.status(200).json({
         ok: true,
         replaced: false,
@@ -153,6 +170,7 @@ app.post("/internal/docx/seed", async (req, res) => {
         bytes: stat.size,
         output: path.relative(ROOT, outPath).split(path.sep).join("/"),
         absolute: outPath,
+        dataBase64,
       });
     } catch (copyErr) {
       res.status(500).json({
@@ -172,8 +190,13 @@ type MutateOp =
   | { kind: "insert_after_match"; find: string; text: string };
 
 type MutateBody = {
-  sourcePath: string;
-  outputPath?: string; // absolute or repo-relative; else temp under storage/dev/doc-worker
+  /** Repo-relative or absolute path on THIS container's filesystem — only
+   * useful when caller and doc-worker share a disk (local dev). */
+  sourcePath?: string;
+  /** Base64 DOCX bytes — the cross-service-safe way to hand doc-worker a
+   * document. Prefer this from cfc-api in any multi-container deployment. */
+  sourceBase64?: string;
+  outputPath?: string; // local-dev convenience only; response always includes dataBase64
   tracked?: boolean;
   ops: MutateOp[];
   actorName?: string;
@@ -189,8 +212,8 @@ app.post("/internal/docx/mutate", async (req, res) => {
   const ops = Array.isArray(body.ops) ? body.ops : [];
   const tracked = body.tracked !== false;
 
-  if (!body.sourcePath) {
-    res.status(400).json({ ok: false, error: "sourcePath is required" });
+  if (!body.sourcePath && !body.sourceBase64) {
+    res.status(400).json({ ok: false, error: "sourcePath or sourceBase64 is required" });
     return;
   }
   if (!ops.length) {
@@ -198,7 +221,6 @@ app.post("/internal/docx/mutate", async (req, res) => {
     return;
   }
 
-  const sourcePath = resolveRepoPath(body.sourcePath);
   const outPath = body.outputPath
     ? resolveRepoPath(body.outputPath)
     : path.join(OUT_DIR, `mutate-${Date.now()}.docx`);
@@ -207,7 +229,15 @@ app.post("/internal/docx/mutate", async (req, res) => {
   const applied: Array<{ op: MutateOp; ok: boolean; note?: string }> = [];
 
   try {
-    await fs.access(sourcePath);
+    await fs.mkdir(OUT_DIR, { recursive: true });
+    let sourcePath: string;
+    if (body.sourceBase64) {
+      sourcePath = path.join(OUT_DIR, `mutate-in-${Date.now()}.docx`);
+      await fs.writeFile(sourcePath, Buffer.from(body.sourceBase64, "base64"));
+    } else {
+      sourcePath = resolveRepoPath(body.sourcePath!);
+      await fs.access(sourcePath);
+    }
     await fs.mkdir(path.dirname(outPath), { recursive: true });
 
     client = createSuperDocClient({
@@ -352,6 +382,7 @@ app.post("/internal/docx/mutate", async (req, res) => {
     }
 
     const stat = await fs.stat(outPath);
+    const dataBase64 = (await fs.readFile(outPath)).toString("base64");
     res.json({
       ok: true,
       output: path.relative(ROOT, outPath).split(path.sep).join("/"),
@@ -360,6 +391,7 @@ app.post("/internal/docx/mutate", async (req, res) => {
       tracked,
       applied,
       fallbackSaved: !saved,
+      dataBase64,
     });
   } catch (error) {
     if (client) await client.dispose().catch(() => undefined);

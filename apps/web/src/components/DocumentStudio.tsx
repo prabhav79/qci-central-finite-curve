@@ -7,6 +7,7 @@ import { ThreadsPanel } from "@/components/ThreadsPanel";
 import { CorpusUploader } from "@/components/CorpusUploader";
 import { AgentPanel } from "@/components/AgentPanel";
 import { DecisionModal, type DecisionKind } from "@/components/DecisionModal";
+import { NewDraftModal } from "@/components/NewDraftModal";
 import {
   PERSONAS,
   type PersonaKey,
@@ -54,6 +55,7 @@ export function DocumentStudio({
     | { level: 1 | 2; kind: DecisionKind }
     | null
   >(null);
+  const [newDraftOpen, setNewDraftOpen] = useState(false);
   const fileRev = useMemo(
     () => (file ? `${file.name}-${file.size}-${file.lastModified}` : "none"),
     [file],
@@ -134,14 +136,17 @@ export function DocumentStudio({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
-  async function onCreate() {
+  async function onCreate(title: string, templateCode: string) {
     setBusy(true);
     setError(null);
     try {
-      const res = await createDraft(persona);
+      const res = await createDraft(persona, title, templateCode);
+      setNewDraftOpen(false);
       await loadDraft(res.draft.id, persona);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      throw e;
+    } finally {
       setBusy(false);
     }
   }
@@ -381,7 +386,7 @@ export function DocumentStudio({
         <button
           type="button"
           disabled={busy}
-          onClick={() => void onCreate()}
+          onClick={() => setNewDraftOpen(true)}
           className="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
         >
           New draft
@@ -493,10 +498,29 @@ export function DocumentStudio({
         }}
       />
 
+      <NewDraftModal
+        open={newDraftOpen}
+        persona={persona}
+        busy={busy}
+        onCancel={() => setNewDraftOpen(false)}
+        onConfirm={(title, templateCode) => onCreate(title, templateCode)}
+      />
+
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_340px]">
-        <section className="min-h-0 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950">
+        <section className="min-h-0 overflow-auto rounded-xl border border-zinc-800 bg-zinc-950">
           {file ? (
-            <div className="h-[calc(100vh-11rem)]" key={fileRev}>
+            // SuperDoc's own CSS defines no overflow/scroll rules at all — it expects
+            // the host app to be the scroll container (confirmed: none of its internal
+            // wrapper classes set overflow-y). The 816px-wide page also isn't
+            // self-centering, so we center it here. Trade-off: the toolbar scrolls
+            // with the document rather than staying sticky — SuperDoc's DOM structure
+            // isn't guaranteed stable enough across versions to safely carve the
+            // toolbar out on its own; revisit as part of the design pass if a pinned
+            // toolbar turns out to matter.
+            <div
+              className="flex h-[calc(100vh-11rem)] justify-center overflow-auto"
+              key={fileRev}
+            >
               <SuperDocEditor
                 ref={editorRef}
                 document={file}

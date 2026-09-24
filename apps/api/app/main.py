@@ -1309,14 +1309,23 @@ def create_draft_from_worker(
     if not worker.get("ok"):
         raise HTTPException(status_code=502, detail=f"doc-worker failed: {worker}")
 
-    abs_path = Path(worker.get("absolute") or (ROOT / worker["output"]))
-    if not abs_path.exists():
-        raise HTTPException(status_code=500, detail=f"worker output missing: {abs_path}")
-
+    # doc-worker and cfc-api are separate containers in prod (Railway) with no
+    # shared filesystem — `absolute`/`output` only resolve on doc-worker's own
+    # disk. Prefer the base64 bytes it returns; fall back to a local path read
+    # only for same-machine local dev where the old shape still works.
     draft_id = uuid.uuid4().hex[:12]
     key = _version_key(draft_id, 1)
     bucket = _bucket()
-    bucket.put_file(key, abs_path)
+    data_b64 = worker.get("dataBase64")
+    if data_b64:
+        import base64 as _b64
+
+        bucket.put(key, _b64.b64decode(data_b64))
+    else:
+        abs_path = Path(worker.get("absolute") or (ROOT / worker["output"]))
+        if not abs_path.exists():
+            raise HTTPException(status_code=500, detail=f"worker output missing: {abs_path}")
+        bucket.put_file(key, abs_path)
     sha = _sha256_file(bucket.get_path(key))
 
     draft = Draft(

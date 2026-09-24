@@ -256,10 +256,17 @@ def _dispatch_mutate(
     new_key, new_abs = _new_version_path(ctx, next_v)
     new_abs.parent.mkdir(parents=True, exist_ok=True)
 
+    # doc-worker runs in a separate container in prod (Railway) with no shared
+    # filesystem — send the current version's bytes rather than a path only
+    # cfc-api can read, and write the response's bytes ourselves rather than
+    # expecting doc-worker to have written to a path only it can reach.
+    import base64 as _b64
+
+    source_b64 = _b64.b64encode(current_path.read_bytes()).decode("ascii")
+
     tracked = ctx.session_flags.get("agent_change_mode") == "tracked"
     payload = {
-        "sourcePath": str(current_path),
-        "outputPath": str(new_abs),
+        "sourceBase64": source_b64,
         "tracked": tracked,
         "ops": ops,
         "actorName": ctx.user.full_name,
@@ -268,6 +275,9 @@ def _dispatch_mutate(
     worker = _post_worker("/internal/docx/mutate", payload)
     if not worker.get("ok"):
         raise ToolError(f"doc-worker failed: {worker.get('error') or worker}")
+
+    if worker.get("dataBase64"):
+        new_abs.write_bytes(_b64.b64decode(worker["dataBase64"]))
 
     applied = worker.get("applied") or []
     ok_count = sum(1 for a in applied if a.get("ok"))
