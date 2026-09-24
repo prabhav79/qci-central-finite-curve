@@ -1,4 +1,10 @@
-FROM node:22-alpine
+# NOT node:22-alpine: @superdoc-dev/sdk ships a native "host process" binary
+# per-platform (@superdoc-dev/sdk-linux-x64, etc.) with only one generic
+# linux-x64 variant published — built against glibc, not Alpine's musl libc.
+# On Alpine this fails at runtime with a generic "Host process failed."
+# error (SuperDoc's own SDK error, not ours) rather than a missing-binary
+# error, which is what actually surfaced this on Railway.
+FROM node:22-slim
 
 WORKDIR /repo
 
