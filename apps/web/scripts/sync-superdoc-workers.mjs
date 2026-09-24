@@ -15,6 +15,16 @@ const assetsDir = path.join(
 );
 const outDir = path.join(webRoot, "public", "superdoc-workers");
 
+// SuperDoc's real compiled CSS. public/superdoc-style.css previously held a
+// verbatim copy of @superdoc-dev/react's own style.css, which is itself just
+// a bundler re-export stub (`@import 'superdoc/style.css';`) — that import
+// specifier only resolves inside a bundler, not as a literal browser fetch
+// against a static file, so it 404'd at runtime and SuperDoc's editor never
+// got its theme (unstyled toolbar buttons, black canvas). The real CSS lives
+// in the engine package itself.
+const cssSrc = path.join(assetsDir, "..", "style.css");
+const cssOut = path.join(webRoot, "public", "superdoc-style.css");
+
 const mapping = [
   ["browser-worker-entry-CsWhwFNb.js", "document-worker.js"],
   ["collaboration-worker-entry-BFoMg_Zo.js", "collaboration-worker.js"],
@@ -49,5 +59,12 @@ for (const [exactName, outName] of mapping) {
   fs.copyFileSync(path.join(assetsDir, srcName), path.join(outDir, outName));
   console.log(`[sync-superdoc-workers] ${srcName} -> ${outName}`);
 }
+
+if (!fs.existsSync(cssSrc)) {
+  console.error(`[sync-superdoc-workers] Missing CSS at ${cssSrc}`);
+  process.exit(1);
+}
+fs.copyFileSync(cssSrc, cssOut);
+console.log(`[sync-superdoc-workers] style.css -> ${path.relative(webRoot, cssOut)}`);
 
 console.log(`[sync-superdoc-workers] done -> ${outDir}`);
