@@ -1,0 +1,386 @@
+# QCI Central Finite Curve — Implementation Plan v3
+## "Institutional-Grade Knowledge Engine & Governance Architecture"
+
+**Prepared:** 22 September 2026  
+**Status:** Comprehensive Revised Plan — incorporating QCI Organizational Hierarchy, Two-Tier Approval RBAC, Plug-and-Play API-first LLM, Direct DOCX Extraction, and Monorepo Deployment on Railway.
+
+---
+
+## Executive Summary
+
+This plan transitions **Central Finite Curve (CFC)** from an initial Streamlit prototype (limited to 19 DARPG work orders and basic semantic search) into a **production-ready, enterprise-grade institutional intelligence and document governance platform** hosted on Railway.
+
+### Core Upgrades in v3:
+1. **Real QCI Organizational Hierarchy & RBAC**: Synthesized from the 20 QCI org chart screenshots. Replaces generic roles with real QCI designations and reporting lines.
+2. **Two-Tier Line Manager Approval Workflow**: Enables Project Managers (PMs) and above to draft documents and queries, requiring sequential Level 1 (Line Manager) and Level 2 (Supervising Director/Advisor) approvals before institutional publication.
+3. **Apex & Administrative Governance**:
+   - **Secretary General (Chakravarthy T. Kannan)**: Complete institutional visibility across all boards, divisions, documents, and approval states.
+   - **System Administrator (Prabhav Kumar Singh)**: Full visibility, administrative management, user management, audit logging, and system configuration.
+4. **Plug-and-Play LLM Architecture**: Zero local model weight overhead, zero LiteLLM proxy latency. Direct, lightweight API client wrapper where users configure API keys directly in settings (e.g. Gemini API, OpenAI), keeping Railway deployments instantaneous and ultra-lean.
+5. **Full Document Corpus Ingestion (50+ Documents)**:
+   - RunPulse OCR (utilizing the 10,000 pages allowance) for all PDF work orders and proposals.
+   - Native `python-docx` extraction for all `.docx` files (zero API cost, instant parsing).
+   - Ingestion of DARPG, DPIIT, DoPPW, Media, IEDM, Impact Assessment, and Sanitation project documents mapped to the PPID Project Registry.
+6. **Rich Dual-Scope Knowledge Graph**:
+   - Multi-tier structural hierarchy: QCI → Division/Board → Project Vertical → Project → Document.
+   - Entity relationship graph: Ministries, Deliverables, Value brackets, Key Personnel, and Timeline.
+7. **Production Stack on Railway**: Next.js 15 (Tailwind + shadcn/ui) frontend + FastAPI backend + PostgreSQL with `pgvector`, 100% covered under your Lenny's Product Pass.
+
+---
+
+## 1. QCI Organizational Hierarchy & RBAC Model
+
+### 1.1 Organizational Topology (Extracted from 20 Org Screenshots)
+
+```mermaid
+graph TD
+    SG["Chakravarthy T. Kannan<br/><b>Secretary General (613)</b><br/><i>[Apex Visibility: Entire QCI]</i>"]
+
+    subgraph "Executive Leadership & Board Heads (Level 1)"
+        SG --> AL["Aditya Lakshman<br/>Assistant Secretary General (1066)"]
+        SG --> MP["Mohit Padhy<br/>Assistant Secretary General (1067)"]
+        SG --> SGh["Subroto Ghosh<br/>Principal Advisor (1052)"]
+        SG --> VK["Virendra Kumar<br/>Chief Technology Officer (1100)"]
+        SG --> AG["Amit Gupta<br/>Chief Financial Officer (1081)"]
+        SG --> AR["Aishvarya Raj<br/>Senior Director (85)"]
+        SG --> DM["Deepti Mohan<br/>Director (20)"]
+        SG --> PB["Punam Bajaj<br/>Director (456)"]
+        SG --> RC["Rudraneel Chattopadhyay<br/>Group Leader (6040)"]
+        SG --> RK["Rupinder Kaur Kang<br/>Deputy Director (504)"]
+        SG --> NV["Natarajan Venkateswaran<br/>CEO (381)"]
+        SG --> RS["Ramanand Nagendra Shukla<br/>CEO (518)"]
+        SG --> VKan["Varinder Singh Kanwar<br/>CEO (573)"]
+    end
+
+    subgraph "Operational Management Vertical (PPID Core Example)"
+        SGh --> AA["Aashna Arora<br/><b>Senior Project Manager (1820)</b><br/><i>[Line Manager - Level 1 Approval]</i>"]
+        AA --> AM["Arpit Mathur<br/><b>Project Manager (6281)</b><br/><i>[Maker / Tool User]</i>"]
+        AM --> PKS["Prabhav Kumar Singh<br/><b>Analyst (8599)</b><br/><b>[SYSTEM ADMIN ACCOUNT]</b><br/><i>Full Institutional Visibility</i>"]
+    end
+```
+
+### 1.2 Designation Hierarchy & Tool Access Tiers
+
+| Tier | Designations | System Role & Permissions | Approval Authority |
+|---|---|---|---|
+| **Tier 0: Apex Leadership** | Secretary General (Chakravarthy T. Kannan) | **Apex Observer & Final Approver**: Global visibility across all boards, verticals, work orders, draft generation, and audit trails. | Can grant final institutional sign-off or override at any level. |
+| **Tier 0 (System): Admin** | System Admin (Prabhav Kumar Singh) | **System Administrator**: Full visibility across all modules, user administration, designation mapping, LLM configuration, system health, and audit logs. | Administrative override and management. |
+| **Tier 1: Directorate / Executive** | ASG, CEO, CTO, CFO, Principal Advisor, Senior Director, Director, Joint Director, Group Leader | **Executive Reviewer & Approver (Level 2 Approval)**: Full visibility into their board/division/vertical sub-tree. Can initiate drafts, approve Level 2 submissions from subordinate SPMs, and view divisional analytics. | **Level 2 Approver** (Authorizes institutional publishing/finalizing). |
+| **Tier 2: Senior Project Management** | Senior Project Manager (SPM), Deputy Director, Assistant Director | **Supervisory Manager (Level 1 Approval)**: Visibility into all projects under their team. Can initiate queries, RAG drafts, and review work submitted by Project Managers. | **Level 1 Approver** (First line manager review and feedback). |
+| **Tier 3: Project Management (The Operational Threshold)** | Project Manager (PM) | **Active Creator / Maker**: Full access to use Central Finite Curve — run semantic search, RAG Q&A, draft Work Orders and Proposals, upload project documents. | **Maker**: All work created is staged in `PENDING_L1_REVIEW` for line manager sign-off. |
+| **Tier 4: Operational Staff (Below PM)** | Associate Manager, Analyst, Coordinator, Executive Officer, Trainee | **Restricted / Read-Only**: Can view published institutional documents relevant to their assigned vertical. Cannot independently generate official work orders or submit binding institutional drafts unless explicitly delegated by their PM. | No approval authority. |
+
+---
+
+## 2. Two-Tier Hierarchical Approval Workflow Engine
+
+Per the governance requirement: *"whatever they do using this tool should be approved by their line managers and their work in turn needs to be approved by their line managers."*
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor PM as Project Manager<br/>(e.g., Arpit Mathur)
+    actor LM1 as Line Manager [SPM]<br/>(e.g., Aashna Arora)
+    actor LM2 as Supervising Leader [Director/PA]<br/>(e.g., Subroto Ghosh)
+    actor SG as Secretary General<br/>(Chakravarthy T. Kannan)
+    actor Admin as System Admin<br/>(Prabhav Kumar Singh)
+
+    Note over PM: Uses RAG Draft Generation<br/>for new Work Order / Extension
+    PM->>PM: Create Draft (Status: DRAFT)
+    PM->>LM1: Submit for Line Approval (Status: PENDING_L1_REVIEW)
+
+    alt Line Manager Requests Changes
+        LM1-->>PM: Rejection / Request Revision with comments (Status: REJECTED)
+        PM->>LM1: Resubmit modified draft
+    else Line Manager Approves
+        LM1->>LM2: Approve Level 1 (Status: APPROVED_L1_PENDING_L2)
+    end
+
+    alt Supervising Leader Approves
+        LM2->>LM2: Approve Level 2 (Status: FINAL_APPROVED)
+        Note over LM2,SG: Document officially published to Institutional Archive
+    else Supervising Leader Rejects
+        LM2-->>PM: Send back with executive notes (Status: REJECTED)
+    end
+
+    Note over SG,Admin: SG & Admin receive real-time dashboard notifications<br/>and maintain full audit visibility across all phases
+```
+
+### State Machine Definition:
+1. `DRAFT`: Initiated by PM or SPM using RAG / template tool.
+2. `PENDING_L1_REVIEW`: Submitted to direct Line Manager (N+1).
+3. `APPROVED_L1_PENDING_L2`: Approved by Line Manager; routed automatically to Line Manager's Manager (N+2).
+4. `FINAL_APPROVED`: Approved by Supervising Director/Advisor; stamped with cryptographic verification and stored in the institutional repository.
+5. `REJECTED`: Returned to initiator with comments and tracked revision history.
+
+---
+
+## 3. Plug-and-Play LLM Architecture (Zero Local Overhead)
+
+### Why No Local Models & No LiteLLM Proxy?
+- **Zero Cold Start**: Local models (like local 7B models or heavy HuggingFace dependencies) take minutes to boot, consume 4GB–8GB of RAM, and can exceed Railway free-tier limits.
+- **LiteLLM Complexity Avoided**: Direct REST / official SDK connectors (`google-genai` / `openai`) have zero proxy latency, require no external proxy service, and maintain minimal package footprint.
+- **User-Controlled Plug & Play**: Users can input their Gemini, OpenAI, or Anthropic API key in Settings. The key is securely encrypted at rest in PostgreSQL and passed directly at execution time.
+
+### Implementation Pattern:
+```python
+# apps/api/app/services/llm_client.py
+import os
+from typing import AsyncIterator
+from google import genai
+from openai import AsyncOpenAI
+
+class LLMClientFactory:
+    @staticmethod
+    def get_client(provider: str, api_key: str):
+        if provider == "gemini":
+            return genai.Client(api_key=api_key)
+        elif provider in ["openai", "grok"]:
+            base_url = "https://api.x.ai/v1" if provider == "grok" else None
+            return AsyncOpenAI(api_key=api_key, base_url=base_url)
+        raise ValueError(f"Unsupported provider: {provider}")
+
+async def stream_rag_response(prompt: str, provider: str, api_key: str, model_name: str) -> AsyncIterator[str]:
+    # Instant, zero-overhead direct streaming
+    if provider == "gemini":
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content_stream(
+            model=model_name or "gemini-2.0-flash",
+            contents=prompt
+        )
+        for chunk in response:
+            yield chunk.text
+    elif provider == "openai":
+        client = AsyncOpenAI(api_key=api_key)
+        stream = await client.chat.completions.create(
+            model=model_name or "gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            stream=True
+        )
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+```
+
+---
+
+## 4. Document Corpus Expansion (50+ Documents)
+
+### Ingestion Strategy:
+1. **PDF Files (Scanned & Formal Orders)**: Processed via **RunPulse OCR API** using your 10,000-page quota. Extracts full text, tabular deliverables, payment milestones, and metadata.
+2. **DOCX Files (Proposals & Drafts)**: Processed natively with `python-docx` without converting to PDF and without consuming RunPulse credits. Extracts headings, body text, bullet points, and tables in milliseconds.
+3. **PPID Project Registry**: Structured database linking project codes (`PB00001` to `PB00050+`), Verticals, Project Leads, and SPOCs directly from `PPID Project Documents Summary.xlsx`.
+
+| Category | File Formats | Processing Route | Corpus Count | Status |
+|---|---|---|---|---|
+| **DARPG Work Orders (Existing)** | PDF | RunPulse OCR | 19 | ✅ Processed |
+| **DARPG Work Orders (New)** | PDF | RunPulse OCR | 6 | ⏳ Ingestion ready |
+| **Other Work Orders (DPIIT, DoPPW, Media, IEDM)** | PDF | RunPulse OCR | 4 | ⏳ Ingestion ready |
+| **Impact Assessment Proposals** | PDF & DOCX | `python-docx` (for docx) / RunPulse (for pdf) | 16 | ⏳ Ingestion ready |
+| **Sanitation Proposals** | PDF & DOCX | `python-docx` (for docx) / RunPulse (for pdf) | 7 | ⏳ Ingestion ready |
+| **Total Institutional Corpus** | | | **52 files** | **Expanding to 50+** |
+
+---
+
+## 5. Dual-Scope Knowledge Graph Architecture
+
+Combining **Option A (Hierarchical Vertical Mapping)** and **Option B (Rich Entity & Deliverable Topology)**:
+
+```mermaid
+graph TD
+    subgraph "Level 1: Institution"
+        QCI["Quality Council of India (QCI)"]
+    end
+
+    subgraph "Level 2: Boards & Divisions"
+        QCI --> PPID["PPID (Project Planning & Implementation)"]
+        QCI --> NBQP["NBQP"]
+        QCI --> NABCB["NABCB"]
+        QCI --> NABH["NABH"]
+    end
+
+    subgraph "Level 3: Project Verticals"
+        PPID --> V_DARPG["DARPG Initiatives"]
+        PPID --> V_SAN["Sanitation & Swachh Bharat"]
+        PPID --> V_IA["Impact Assessment"]
+        PPID --> V_COMM["Commerce & Industry (DPIIT)"]
+    end
+
+    subgraph "Level 4: Projects & Work Orders"
+        V_DARPG --> P_CPGRAMS["CPGRAMS PMU (Phases 1-8)"]
+        V_DARPG --> P_NESDA["NeSDA PMU (Phases 1-4)"]
+        V_DARPG --> P_SCDPM["SCDPM PMU (Phases 1-7)"]
+        V_IA --> P_NITI["NITI Aayog Impact Studies"]
+        V_SAN --> P_ODF["ODF+ Urban Sanitation Surveys"]
+    end
+
+    subgraph "Level 5: Semantic Entity Layer"
+        P_CPGRAMS --- E_VAL["Value: ₹1.5 Cr+"]
+        P_CPGRAMS --- E_DEL["Deliverable: Monthly Analytics & PMU"]
+        P_CPGRAMS --- E_LEAD["Lead: Arpit Mathur (PM)"]
+        P_CPGRAMS --- E_MGR["Line: Aashna Arora (SPM)"]
+    end
+```
+
+Interactive frontend filters will let leadership click any node to filter:
+- *By Division/Vertical* (e.g., see only Sanitation proposals)
+- *By Line Manager* (e.g., see all documents managed under Aashna Arora)
+- *By Deliverable / Financial Bracket* (e.g., projects > ₹1 Crore)
+
+---
+
+## 6. Target Database Schema (PostgreSQL 16 + pgvector)
+
+```sql
+-- Enable vector extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- 1. Users & Hierarchy
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    employee_id VARCHAR(50) UNIQUE,
+    full_name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    designation VARCHAR(150) NOT NULL,     -- 'Secretary General', 'Senior Project Manager', 'Project Manager', 'Analyst'
+    grade VARCHAR(100),                    -- 'Grade - Regular', 'Grade - Senior Professional', 'Grade - Young Professional'
+    division_or_board VARCHAR(100),        -- 'PPID', 'NABH', 'NABL', 'NBQP', 'TCB'
+    manager_id INTEGER REFERENCES users(id),-- Recursive self-reference: Line Manager
+    is_admin BOOLEAN DEFAULT FALSE,        -- True for Prabhav Kumar Singh
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 2. Documents Registry
+CREATE TABLE documents (
+    id SERIAL PRIMARY KEY,
+    doc_id VARCHAR(255) UNIQUE NOT NULL,
+    filename VARCHAR(500) NOT NULL,
+    category VARCHAR(100),                 -- 'work_order', 'proposal', 'report', 'amendment'
+    division_or_board VARCHAR(100),        -- 'PPID', 'DPIIT'
+    project_vertical VARCHAR(100),         -- 'DARPG', 'Sanitation', 'Impact Assessment'
+    project_name VARCHAR(255),
+    client_or_ministry VARCHAR(255),
+    issue_date VARCHAR(50),
+    value_inr NUMERIC,
+    deliverables TEXT,
+    raw_text TEXT,
+    raw_file_path TEXT,
+    uploader_id INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Document Chunks & Embeddings (Vector Search)
+CREATE TABLE document_chunks (
+    id SERIAL PRIMARY KEY,
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL,
+    chunk_text TEXT NOT NULL,
+    embedding vector(768),                 -- Gemini text-embedding-004 (768) or 384 for MiniLM
+    metadata JSONB
+);
+
+CREATE INDEX idx_chunks_embedding ON document_chunks 
+    USING hnsw (embedding vector_cosine_ops);
+
+-- 4. Multi-Tier Approval Workflow
+CREATE TABLE document_approvals (
+    id SERIAL PRIMARY KEY,
+    document_id INTEGER REFERENCES documents(id),
+    maker_id INTEGER REFERENCES users(id),
+    l1_manager_id INTEGER REFERENCES users(id),
+    l2_manager_id INTEGER REFERENCES users(id),
+    status VARCHAR(50) DEFAULT 'DRAFT',    -- 'DRAFT', 'PENDING_L1_REVIEW', 'APPROVED_L1_PENDING_L2', 'FINAL_APPROVED', 'REJECTED'
+    l1_comments TEXT,
+    l1_reviewed_at TIMESTAMPTZ,
+    l2_comments TEXT,
+    l2_reviewed_at TIMESTAMPTZ,
+    final_version_path TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. User LLM Configuration (Encrypted)
+CREATE TABLE user_llm_configs (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    provider VARCHAR(50) NOT NULL,         -- 'gemini', 'openai', 'anthropic'
+    api_key_encrypted TEXT NOT NULL,
+    model_name VARCHAR(100),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 6. Comprehensive Audit Trail
+CREATE TABLE audit_logs (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id),
+    action VARCHAR(100) NOT NULL,          -- 'QUERY_RAG', 'DRAFT_GENERATED', 'APPROVED_L1', 'APPROVED_L2', 'DOWNLOAD_DOC'
+    target_id VARCHAR(255),
+    metadata JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+---
+
+## 7. Phased Implementation Roadmap
+
+### Phase 1: Environment & Backend Foundation (Days 1–3)
+- [ ] Initialize monorepo directory layout (`apps/api`, `apps/web`).
+- [ ] Setup FastAPI backend with async SQLAlchemy and Alembic.
+- [ ] Deploy Railway PostgreSQL database with `pgvector` enabled.
+- [ ] Seed QCI organizational hierarchy into `users` table:
+  - Apex: Chakravarthy T. Kannan (Secretary General)
+  - Admin: Prabhav Kumar Singh (System Admin)
+  - Direct reports: Subroto Ghosh (PA), Aashna Arora (SPM), Arpit Mathur (PM), Aditya Lakshman (ASG), Virendra Kumar (CTO), etc.
+- [ ] Implement JWT authentication and the RBAC authorization middleware (enforcing PM+ creator threshold, line manager Level 1 approval, directorate Level 2 approval, and SG/Admin global visibility).
+
+### Phase 2: Ingestion & Document Corpus Expansion (Days 4–7)
+- [ ] Build dual ingestion worker:
+  - RunPulse OCR module for PDFs (reading `RUNPULSE_API_KEY` from `.env`).
+  - Native `python-docx` parser for Word documents.
+- [ ] Ingest all remaining files:
+  - 6 new DARPG work orders
+  - 4 non-DARPG orders (DPIIT, DoPPW, Media, IEDM)
+  - 16 Impact Assessment proposals
+  - 7 Sanitation proposals
+- [ ] Populate `PPID Project Documents Summary.xlsx` metadata into database.
+- [ ] Generate vector embeddings and construct HNSW indexes.
+
+### Phase 3: Direct API Plug-and-Play RAG Engine (Days 8–10)
+- [ ] Build `LLMClientFactory` for direct Gemini and OpenAI API streaming.
+- [ ] Implement Settings endpoint allowing users to store/update their API keys securely.
+- [ ] Implement `POST /rag/query`: Context retrieval + cited answer streaming.
+- [ ] Implement `POST /rag/draft`: Institutional template retrieval + draft generation with precedent citations.
+- [ ] Connect draft outputs into `document_approvals` state machine.
+
+### Phase 4: Full-Stack Frontend on Next.js (Days 11–16)
+- [ ] Scaffold Next.js 15 app with Tailwind CSS, dark mode, and shadcn/ui.
+- [ ] Build **Hierarchy Tree Viewer & Governance Center**:
+  - Interactive visual representation of QCI reporting lines.
+  - Approvals dashboard: Line managers see pending reviews, submit approval/rejection comments.
+- [ ] Build **RAG Workspace**:
+  - Interactive streaming Q&A with clickable document source badges.
+  - Institutional Draft Generator wizard (Work Order / Proposal / PMU Extension).
+- [ ] Build **Interactive Knowledge Graph** (Vis-network / 2D Canvas):
+  - Filterable by Division, Vertical, Ministry, and Line Manager.
+- [ ] Build **Document Repository & Audit Log Viewer**.
+
+### Phase 5: Railway Deployment & Leadership Demo Rehearsal (Days 17–19)
+- [ ] Deploy frontend and backend services to Railway.
+- [ ] Verify live domain connectivity, persistent PostgreSQL storage, and SSL.
+- [ ] Test 3 leadership demo personas:
+  1. **Maker Persona (Arpit Mathur - PM)**: Generates a new PMU extension draft for CPGRAMS; submits for review.
+  2. **Line Manager Persona (Aashna Arora - SPM)**: Receives notification, reviews draft, approves Level 1 with comments; passes to Subroto Ghosh.
+  3. **Apex Persona (Chakravarthy T. Kannan - SG)** & **Admin (Prabhav Kumar Singh)**: Views overall QCI project analytics, verifies completed approvals, and inspects institutional audit trail.
+
+---
+
+## 8. Verification & Acceptance Criteria
+
+1. **Hierarchy Integrity**: Users can only approve work within their explicit reporting tree; Project Managers can create, but cannot self-approve without Line Manager sign-off.
+2. **Global Visibility**: Logging in as Secretary General or Admin displays all 50+ documents and pending approvals across all divisions.
+3. **Plug-and-Play AI**: Entering a personal Gemini API key in Settings immediately powers live RAG streaming without restarts or server reconfiguration.
+4. **DOCX & PDF Parity**: Both formats are fully parsed, searchable, and cited in generated answers.
+5. **Always-On Railway URL**: Instant access with zero sleep timeouts, fast response times, and clean UI aesthetics.

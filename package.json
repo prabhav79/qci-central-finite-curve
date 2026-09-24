@@ -1,0 +1,25 @@
+{
+  "name": "cfc-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "description": "QCI Central Finite Curve — SuperDoc-native institutional knowledge platform",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @cfc/web",
+    "dev:api": "npm run dev -w @cfc/api",
+    "dev:doc-worker": "npm run dev -w @cfc/doc-worker",
+    "dev:collab": "npm run dev -w @cfc/collab",
+    "build:web": "npm run build -w @cfc/web",
+    "sync:superdoc-workers": "npm run sync:superdoc-workers -w @cfc/web",
+    "lint": "npm run lint -w @cfc/web --if-present"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "railway": "^3.11.0"
+  }
+}

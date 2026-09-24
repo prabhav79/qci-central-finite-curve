@@ -1,0 +1,7 @@
+{
+  "name": "@cfc/qci-seed",
+  "version": "0.1.0",
+  "private": true,
+  "description": "QCI hierarchy and reference seed data",
+  "main": "hierarchy.seed.json"
+}

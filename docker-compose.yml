@@ -1,0 +1,51 @@
+# Optional local infra for CFC dev.
+# The API still boots against SQLite by default (storage/dev/cfc.db).
+# Opt in to Postgres when you want to work on pgvector / production-shaped
+# retrieval:
+#
+#   docker compose up -d postgres
+#   export DATABASE_URL='postgresql+psycopg://cfc:cfc@127.0.0.1:5433/cfc'
+#   cd apps/api && python -m alembic upgrade head
+#   npm run dev:api
+#
+# Data lives in the named volume `cfc_pgdata`; `docker compose down -v` wipes it.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: cfc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cfc
+      POSTGRES_PASSWORD: cfc
+      POSTGRES_DB: cfc
+    ports:
+      - "5433:5432" # 5433 avoids clashing with a native Postgres if you have one
+    volumes:
+      - cfc_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cfc -d cfc"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Optional collab server — Sprint 5 scaffold.
+  # `docker compose up -d collab` after `postgres` is healthy.
+  # Client-side wiring lands in Sprint 5.5 once SuperDoc's Yjs binding API
+  # is pinned. Until then, this server is idle even when running.
+  collab:
+    build:
+      context: .
+      dockerfile: apps/collab/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://cfc:cfc@postgres:5432/cfc
+      COLLAB_PORT: "8200"
+    ports:
+      - "8200:8200"
+    profiles: ["collab"]
+
+volumes:
+  cfc_pgdata:

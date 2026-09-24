@@ -1,0 +1,17 @@
+# Railway CLI `railway up` upload exclusions.
+# Belt-and-suspenders alongside .gitignore: this repo has a 1.1GB local
+# .venv/ at the root (legacy Streamlit-era Python env, never used by the
+# apps/api Docker build, which installs its own deps from requirements.txt).
+# Uploading it on every `railway up` was almost certainly the cause of
+# repeated "Failed to create code snapshot" / upload timeout failures.
+
+.venv/
+venv/
+node_modules/
+.next/
+.git/
+*.pyc
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+storage/dev/

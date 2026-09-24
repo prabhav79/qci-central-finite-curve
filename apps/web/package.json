@@ -1,0 +1,35 @@
+{
+  "name": "@cfc/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "sync:superdoc-workers": "node ./scripts/sync-superdoc-workers.mjs",
+    "predev": "node ./scripts/sync-superdoc-workers.mjs",
+    "dev": "next dev --port 3000",
+    "prebuild": "node ./scripts/sync-superdoc-workers.mjs",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "lint": "eslint",
+    "test:e2e": "playwright test",
+    "test:e2e:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "@cfc/shared-types": "0.1.0",
+    "@superdoc-dev/react": "^1.16.2",
+    "next": "^15.5.7",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3",
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^15.5.7",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "@playwright/test": "^1.49.0"
+  }
+}

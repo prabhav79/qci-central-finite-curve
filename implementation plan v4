@@ -1,0 +1,468 @@
+﻿# QCI Central Finite Curve — Implementation Plan v4 (FINAL)
+## Institutional Knowledge Engine + SuperDoc-Native Document Governance
+
+**Prepared:** 22 September 2026  
+**Finalized:** 22 September 2026  
+**Status:** FINAL — build authority for CFC v4  
+**Supersedes:** Implementation Plan v3  
+**Related:** CFC_Implementation_Plan_IT_Brief.*, Draft_Implementation_Plan_for_Repository_24042026_v1.*  
+**Legacy app (frozen):** `src/app.py` Streamlit prototype — no new features  
+
+---
+
+## 0. Final decision lock
+
+These decisions are closed for MVP unless IT/security forces a change:
+
+| # | Decision | Choice |
+|---|---|---|
+| D1 | Document system of record | Real `.docx` via SuperDoc (not markdown/HTML drafts) |
+| D2 | Authoring surface | In-app SuperDoc Document Studio |
+| D3 | Browser package | `@superdoc-dev/react` (Next.js client-only dynamic import) |
+| D4 | Headless/agent package | `@superdoc-dev/sdk` in Node `doc-worker` |
+| D5 | Backend domain API | FastAPI (auth, RBAC, RAG, workflow, metadata) |
+| D6 | Frontend | Next.js 15 App Router + Tailwind + shadcn/ui |
+| D7 | DB | PostgreSQL 16 + `pgvector` |
+| D8 | Draft binary storage | Object storage (S3-compatible); immutable versioned DOCX |
+| D9 | Collaboration (MVP+) | Self-hosted Yjs (Hocuspocus); not Liveblocks-first |
+| D10 | LLM | Plug-and-play user/API keys; no local model weights; no LiteLLM required |
+| D11 | Embeddings (prod) | API embeddings (Gemini `text-embedding-004`, 768-d); MiniLM local-dev fallback only |
+| D12 | Corpus OCR | RunPulse for PDF; `python-docx` for corpus DOCX extract only |
+| D13 | Approval model | Two-tier line manager (N+1, N+2) bound to DOCX review artifacts |
+| D14 | Hosting target | Railway monorepo multi-service |
+| D15 | Streamlit | Frozen legacy demo |
+| D16 | SuperDoc license | Track commercial license before public production; AGPL only for internal/dev until counsel signs off |
+| D17 | Demo vertical focus | PPID path first; multi-board users seeded for ACL realism |
+| D18 | Final seal (v1) | SHA-256 of final DOCX + audited approval row (PKI later if required) |
+
+**Product thesis (immutable):**  
+CFC = **Institutional RAG** + **Org RBAC** + **SuperDoc Document OS**.  
+LLMs serve the open DOCX. Approvals review redlines/comments/versions — not detached form checkboxes.
+
+---
+
+## 1. Executive summary
+
+Central Finite Curve transitions from a Streamlit RAG prototype (~19 processed DARPG work orders) into a production institutional drafting and governance platform.
+
+Staff will:
+1. Search grounded precedent across 50+ institutional files.
+2. Generate a Word-compatible draft from QCI templates inside CFC.
+3. Edit, chat-refine, and collaborate on that DOCX in SuperDoc.
+4. Submit through real QCI line management (PM → SPM → Director/PA).
+5. Publish a locked final DOCX into the institutional archive.
+
+### v4 critical upgrades vs v3
+1. SuperDoc is the primary document UX (browser + headless).
+2. RBAC maps to SuperDoc `role` + `documentMode`.
+3. Approval is document-native (comments, tracked changes, locks, clean export).
+4. AI chat mutates the open DOCX through Document API / agent tools.
+5. Collaboration, version history, and templates are first-class.
+6. Object storage + `doc-worker` + collab service are explicit.
+7. Document spine is built early (not bolted on after abstract RAG).
+
+---
+
+## 2. QCI hierarchy and RBAC (build contract)
+
+### 2.1 Principles
+- Reporting tree via `users.manager_id`. Approvals flow **N+1 then N+2**.
+- **Project Manager and above** may create institutional drafts.
+- Below PM: published/read in assigned vertical unless delegated.
+- **Secretary General (Chakravarthy T. Kannan):** apex observer, global read, optional override.
+- **System Admin (Prabhav Kumar Singh):** full visibility + admin ops (`is_admin=true`); not default business approver.
+
+### 2.2 Role matrix
+
+| Tier | Designations | CFC role | SuperDoc role | Default mode | Create | L1 | L2 | Visibility |
+|---|---|---|---|---|---|---|---|---|
+| 0 Apex | Secretary General | `apex` | `viewer` (elevate on request) | `viewing` + markup | No* | Override | Override | Global |
+| 0 Admin | System Admin | `admin` | ops `editor` when needed | `viewing` | Ops only | Admin override | Admin override | Global |
+| 1 Executive | ASG, CEO, CTO, CFO, PA, SD, Director, JD, GL | `l2_approver` | `suggester` | `suggesting` | Yes | If N+1 | Yes (subtree) | Subtree |
+| 2 SPM/DD/AD | Senior Project Manager, Deputy/Assistant Director | `l1_approver` | `suggester` | `suggesting` | Yes | Yes | No** | Team |
+| 3 PM | Project Manager | `maker` | `editor` | `editing` | Yes | No | No | Own + assigned |
+| 4 Staff | Analyst, AM, Coordinator, Trainee | `reader` | `viewer` | `viewing` | No | No | No | Assigned published |
+
+\*Delegation exception allowed and audited.  
+\**Unless the same person is also L2 in chain.
+
+### 2.3 Demo reporting spine
+```
+SG: Chakravarthy T. Kannan
+  └─ PA: Subroto Ghosh
+       └─ SPM / L1: Aashna Arora
+            └─ PM / Maker: Arpit Mathur
+                 └─ Analyst + Admin flag: Prabhav Kumar Singh
+```
+
+### 2.4 Approval state machine × SuperDoc
+
+| Status | Actor | SuperDoc behavior |
+|---|---|---|
+| `DRAFT` | Maker | `editing`; versioned saves; agent direct or tracked (toggle) |
+| `PENDING_L1_REVIEW` | L1 | Maker locked/`viewing`; L1 `suggesting`; reject needs anchored comments |
+| `APPROVED_L1_PENDING_L2` | L2 | L2 `suggesting` |
+| `FINAL_APPROVED` | System | Hard lock; clean export; publish to archive; SHA-256 seal |
+| `REJECTED` | Maker | Back to `editing` + threads + diff vs submitted version |
+| `CHANGES_REQUESTED` | Maker | Soft reject; threads remain open |
+
+**Server issues Document Session Tokens.** Client cannot self-upgrade mode/role.
+
+---
+
+## 3. SuperDoc product scope
+
+### 3.1 Must-have (MVP)
+1. Open/edit/export DOCX in CFC (Document Studio).
+2. Create draft from template; load/save via authenticated API.
+3. Version every meaningful save/submit/decision.
+4. Mode/role from RBAC session token.
+5. Submit → L1 → L2 → FINAL on the same DOCX.
+6. Comments + tracked changes for review.
+7. Doc-grounded AI chat that can mutate the open draft (maker) or propose tracked edits (approver).
+8. Generate-from-precedent (template + RAG + headless fill → Studio).
+9. Export clean final DOCX; retain internal review copy.
+
+### 3.2 Expanded capabilities (phased)
+- Template content-controls + field validation gate
+- Agent presets: Precedent Weaver, Redline Extender, Completeness Rater, Playbook/style, Clarity, Bulk Updater, Citation Auditor, Value checker, Routing assistant, Finalization packager
+- Self-hosted collab presence
+- Version diff viewer
+- Compare-with-precedent (DOCX diff / PDF text panel)
+- Citation bookmarks mapped to chunk IDs
+- Deep-link notifications to comment/change anchors
+- Admin template library UI
+- Knowledge graph navigation into corpus/drafts
+- Fixture CI for DOCX round-trips
+
+### 3.3 Explicit non-goals (near term)
+- Custom rich-text editor parallel to SuperDoc
+- PDF pixel editing as authoring surface
+- Liveblocks as default collab
+- Auto-FINAL without human L2
+- Mobile editing parity
+- Replacing QCI email/ERP
+- India residency guarantees beyond Railway/vendor posture (revisit if IT mandates)
+
+---
+
+## 4. Target architecture
+
+```mermaid
+flowchart LR
+  subgraph Web["apps/web — Next.js 15"]
+    UI[CFC Shell + RBAC]
+    SD[SuperDoc React Editor]
+    Chat[Doc AI Panel]
+    Gov[Approvals Inbox]
+  end
+
+  subgraph API["apps/api — FastAPI"]
+    Auth[JWT + RBAC]
+    RAG[Retrieval + ACL]
+    LLM[LLMClientFactory]
+    WF[Approval SM]
+    Ing[Ingestion]
+  end
+
+  subgraph Worker["apps/doc-worker — Node"]
+    SDK["@superdoc-dev/sdk"]
+    Agent[Doc Agent Loop]
+  end
+
+  subgraph Data["Railway"]
+    PG[(Postgres + pgvector)]
+    Obj[(Object storage)]
+    Collab[Hocuspocus]
+  end
+
+  UI --> Auth
+  SD -->|DOCX GET/PUT| API
+  SD --> Collab
+  Chat --> API
+  API --> Worker
+  Worker --> SDK
+  Worker --> Obj
+  RAG --> PG
+  WF --> PG
+  Ing --> PG
+```
+
+### 4.1 Monorepo layout
+```
+apps/
+  web/           # Next.js 15 + @superdoc-dev/react
+  api/           # FastAPI domain API
+  doc-worker/    # SuperDoc headless + agent tools
+  collab/        # Hocuspocus (Phase 6)
+packages/
+  shared-types/
+  qci-seed/      # hierarchy JSON
+  doc-fixtures/  # template + round-trip fixtures
+infra/
+  railway/
+  docker/
+```
+
+### 4.2 Core data objects
+- **`documents` + `document_chunks`:** institutional corpus and published finals (searchable).
+- **`drafts` + `draft_versions`:** working governed DOCX (system of record for authoring).
+- **`doc_templates`:** substrate DOCX + field schema.
+- **`draft_approvals`:** workflow with version pointers.
+- **`users`:** hierarchy + RBAC.
+- **`audit_logs` / `user_llm_configs` / `draft_citations`.**
+
+Storage paths:
+- `templates/{code}.docx`
+- `drafts/{draft_id}/v{n}.docx`
+- `final/{document_id}.docx`
+
+### 4.3 Minimum API surface
+- Auth: `POST /auth/login`, `GET /me`, `GET /hierarchy/tree`
+- Corpus: `GET /documents`, `POST /search`, `POST /ingest/run`
+- Drafts: `POST /drafts`, `GET /drafts/{id}/session`, `GET|PUT /drafts/{id}/file`, `GET /drafts/{id}/versions`, `POST /drafts/{id}/restore/{v}`
+- Workflow: `POST /drafts/{id}/submit`, `POST /drafts/{id}/decide`, `GET /approvals/inbox`
+- Agent: `POST /drafts/{id}/agent/chat` (SSE), `POST /drafts/{id}/agent/run-preset`
+- Admin: users, templates, audit
+
+---
+
+## 5. Phased roadmap (FINAL)
+
+| Phase | Days | Outcome |
+|---|---|---|
+| **0 Assets and freeze** | 0–1 | License note, seed JSON, templates, branch |
+| **1 Platform spine** | 1–4 | Monorepo, DB, JWT, hierarchy login personas |
+| **2 Corpus ingestion** | 4–7 | ≥40 files searchable with ACL (parallel with 3) |
+| **3 SuperDoc Studio MVP** | 5–10 | Open/edit/save/export DOCX via API |
+| **4 Governance on DOCX** | 10–13 | Maker→L1→L2→FINAL with redlines/comments |
+| **5 Doc-grounded agent** | 12–16 | Chat + generate-from-precedent + presets 1–6 |
+| **6 Collab, diff, polish** | 16–19 | Hocuspocus, diff, KG/repo UI, SG dashboards |
+| **7 Demo harden** | 19–22 | Persona rehearsal, fixtures, security pass |
+
+**MVP leadership demo definition of done:**  
+Arpit generates CPGRAMS extension from precedent → Aashna L1 redlines/approves → L2 final → SG/Admin see audit and locked final DOCX — all inside CFC.
+
+---
+
+## 6. Audit of v3 (summary)
+
+**Keep:** hierarchy, two-tier approvals, plug-and-play LLM, RunPulse+docx ingestion, pgvector, Railway, KG navigation, demo personas.  
+**Change:** drafts are DOCX; Studio early; Node doc-worker; approvals document-native; freeze Streamlit; realistic 19–22 day MVP.  
+**Drop/defer:** custom editor, local LLMs, Liveblocks-first, PDF authoring, auto-FINAL.
+
+---
+
+## 7. Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| SuperDoc AGPL | Dev/internal first; commercial license before public prod |
+| DOCX fidelity | Fixture suite from real QCI proposals/WOs |
+| Agent over-write | Version-before-mutate; approver tracked-only; ACL on RAG tools |
+| Collab ops | Phase 6; durable truth always versioned DOCX |
+| Railway sizing | Separate services; measure doc-worker RSS with SDK CLI |
+| Word round-trip IDs | Bookmarks + DB citations; do not rely only on runtime nodeIds |
+| Data residency | Carry IT brief warning; region/vendor review with QCI IT |
+
+---
+
+## 8. INITIAL TECHNICAL STEPS — SuperDoc integration
+
+This section is the **immediate engineering kickoff**. Execute in order. Do not start Streamlit work.
+
+### Step 0 — Preconditions (Day 0)
+1. Create git branch `feat/cfc-v4-superdoc` from `main`.
+2. Record license stance in `docs/licensing-superdoc.md` (dev under AGPL evaluation vs production commercial).
+3. Confirm Node **≥ 22.12** and pnpm (or npm) available on dev machines.
+4. Copy 2–3 real DOCX samples into `packages/doc-fixtures/samples/` from existing corpus (Impact Assessment / Sanitation proposals under `Work Orders/shortlisted_project/`).
+5. Add one blank-ish **Work Order Extension** substrate as `packages/doc-fixtures/templates/WO_EXTENSION.docx` (can start from a cleaned proposal shell).
+
+### Step 1 — Scaffold monorepo skeleton (Day 1)
+```
+/
+  package.json                 # pnpm workspace root
+  pnpm-workspace.yaml
+  apps/web                     # create-next-app (TS, App Router, Tailwind)
+  apps/api                     # FastAPI + uv/poetry later
+  apps/doc-worker              # Node TS service
+  packages/shared-types
+  packages/qci-seed
+  packages/doc-fixtures
+```
+Root scripts: `dev:web`, `dev:api`, `dev:doc-worker`.
+
+### Step 2 — Install SuperDoc in web (Day 1)
+Inside `apps/web`:
+```bash
+pnpm add @superdoc-dev/react
+```
+Global CSS import once in client layout path:
+```ts
+import '@superdoc-dev/react/style.css';
+```
+**Next.js rule:** SuperDoc is browser-only.
+```tsx
+'use client';
+import dynamic from 'next/dynamic';
+
+export const SuperDocEditor = dynamic(
+  () => import('@superdoc-dev/react').then((m) => m.SuperDocEditor),
+  { ssr: false, loading: () => <div>Loading document editor…</div> }
+);
+```
+
+### Step 3 — Spike route: local fixture open/export (Day 1–2)
+Create `apps/web/app/dev/superdoc-spike/page.tsx`:
+- Load `/fixtures/sample.docx` from `public/fixtures`.
+- Mount `SuperDocEditor` with:
+  - `documentMode="editing"`
+  - `role="editor"`
+  - `user={{ name, email }}`
+- Buttons: **Export download**, **Export Blob to console size**.
+- Handlers: `onReady`, `onContentError`, `onException`, `onEditorUpdate` (dirty flag).
+
+**Exit criteria:** edit text → export → open in Microsoft Word with formatting intact.
+
+### Step 4 — Minimal draft file API (Day 2)
+Even before full auth, stand up FastAPI endpoints backed by local disk (`storage/dev/`):
+- `POST /dev/drafts` → create id, copy template to `storage/dev/drafts/{id}/v1.docx`
+- `GET /dev/drafts/{id}/file` → `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+- `PUT /dev/drafts/{id}/file` → write `v{n+1}.docx`, return version metadata
+- `GET /dev/drafts/{id}/versions`
+
+CORS allow `localhost:3000`.
+
+### Step 5 — Wire Studio load/save against API (Day 2–3)
+`DocumentStudio` client component:
+1. `GET /drafts/{id}/file` → `Blob`/`File`.
+2. Pass Blob into `SuperDocEditor document={file}`.
+3. On Save:
+   - `const blob = await ref.getInstance().export({ exportType: ['docx'], triggerDownload: false })`
+   - `PUT` bytes to API
+4. Show version number + saved/unsaved state from `onEditorUpdate`.
+5. Warn on `beforeunload` if dirty.
+
+**Exit criteria:** reload page restores last saved DOCX.
+
+### Step 6 — Session token → mode/role mapping (Day 3–4)
+Implement `GET /drafts/{id}/session` returning:
+```json
+{
+  "draft_id": 1,
+  "user": { "name": "Arpit Mathur", "email": "arpit@qci.local" },
+  "superdoc_role": "editor",
+  "document_mode": "editing",
+  "can_save": true,
+  "can_submit": true,
+  "agent_change_mode": "direct"
+}
+```
+Map status×role on server:
+
+| draft.status | caller relation | mode | role | can_save |
+|---|---|---|---|---|
+| DRAFT | maker | editing | editor | true |
+| PENDING_L1 | l1 | suggesting | suggester | true (review save) |
+| PENDING_L1 | maker | viewing | viewer | false |
+| FINAL_APPROVED | any | viewing | viewer | false |
+
+Pass into SuperDoc:
+```tsx
+<SuperDocEditor
+  document={file}
+  documentMode={session.document_mode}
+  role={session.superdoc_role}
+  user={session.user}
+/>
+```
+**Never** trust query-param mode overrides.
+
+### Step 7 — doc-worker SuperDoc SDK spike (Day 3–5)
+```bash
+cd apps/doc-worker
+pnpm add @superdoc-dev/sdk
+```
+Implement `POST /internal/docx/apply-demo`:
+1. Open template path with SDK.
+2. `query.match` a placeholder like `{{PROJECT_TITLE}}`.
+3. Replace with sample string (`changeMode: 'tracked'` optional).
+4. Save to output path; return file.
+5. Open result in web Studio.
+
+This validates **headless → browser** round-trip before LLM wiring.
+
+### Step 8 — First governance slice on DOCX (Day 5+)
+Only after Steps 5–7 are green:
+1. `POST /drafts/{id}/submit` flips status + freezes maker saves.
+2. L1 login opens same draft in `suggesting`.
+3. L1 adds comment / tracked change; save new version.
+4. Decide L1 approve → L2; L2 FINAL → lock + copy to `final/`.
+
+### Step 9 — Agent path (after Studio stable)
+1. FastAPI `/agent/chat` orchestrates tool loop.
+2. CFC tools: `cfc_search_corpus`, `cfc_get_project_metadata`.
+3. Doc tools: dispatch via doc-worker (`chooseTools` / `dispatchSuperDocTool` from SDK).
+4. Always `PUT` snapshot version with trigger `ai_agent` **before** mutations.
+5. Approver sessions force `defaultChangeMode: 'tracked'`.
+
+### Step 10 — Engineering standards for SuperDoc (ongoing)
+- Telemetry: disable or self-host only.
+- Destroy/cleanup editor on route change.
+- Dynamic import only; no SSR of SuperDoc.
+- Treat exported Blob as source of truth for saves (not HTML projections).
+- Add Playwright smoke: open draft → type → save → reload.
+- Add SDK unit fixture: placeholder replace + trackChanges.list.
+- Pin SuperDoc versions in workspace until upgrade is tested on fixtures.
+
+### Suggested first-week sequence (calendar)
+| Day | Focus |
+|---|---|
+| D0 | Branch, fixtures, license note, hierarchy seed kickoff |
+| D1 | Monorepo + Next spike open/export |
+| D2 | Draft file API + Studio save/reload |
+| D3 | Session mode mapping + fake personas |
+| D4 | doc-worker placeholder replace spike |
+| D5 | Submit/L1 suggesting path thin slice |
+
+---
+
+## 9. Acceptance criteria (FINAL MVP)
+
+1. Hierarchy ACL prevents out-of-tree approval; PM cannot self-FINAL.
+2. Session token enforces SuperDoc mode; tampered client cannot illegal-save.
+3. DOCX round-trip survives MS Word open with headers/tables/lists.
+4. Maker→L1→L2→FINAL works on one WO extension with redlines retained internally.
+5. Agent draft generation cites ACL-visible corpus only.
+6. FINAL export clean; internal review version retained; SHA-256 stored.
+7. No document bytes sent to SuperDoc cloud (self-hosted only).
+8. Demo path under ~10 minutes for leadership personas.
+
+---
+
+## 10. Immediate next actions (owners)
+
+1. **Eng:** Execute Section 8 Steps 0–5 (SuperDoc Studio vertical slice).  
+2. **Eng:** Build `packages/qci-seed` hierarchy JSON from `QCI Hierarchy/*.png`.  
+3. **Product/Admin:** Confirm SuperDoc commercial path for production URL.  
+4. **Eng:** Freeze Streamlit; all new work on `feat/cfc-v4-superdoc`.  
+5. **Eng:** Stand up local Postgres+pgvector in Phase 1 alongside Studio spike (can use Docker).
+
+---
+
+## 11. Traceability
+
+| Artifact | Role |
+|---|---|
+| `implementation plan v4` | **This file — FINAL build authority** |
+| `implementation plan v3` | Historical precursor |
+| `QCI Hierarchy/*.png` | Org evidence (20 charts) |
+| `Work Orders/**` | Corpus + candidate template sources |
+| `data/processed/*.json` | Legacy extracted metadata (19 files) |
+| `src/*` | Frozen Streamlit prototype |
+| SuperDoc docs | https://docs.superdoc.dev (Editor quickstart, Document API, Agents, SDK) |
+
+---
+
+**End of Implementation Plan v4 (FINAL).**  
+Build order begins at **Section 8 — Initial Technical Steps for SuperDoc Integration**.

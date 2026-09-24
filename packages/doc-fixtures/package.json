@@ -1,0 +1,6 @@
+{
+  "name": "@cfc/doc-fixtures",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DOCX samples and templates for SuperDoc round-trip tests"
+}
