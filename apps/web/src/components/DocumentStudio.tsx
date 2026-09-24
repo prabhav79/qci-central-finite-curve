@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { SuperDocEditor, type SuperDocEditorRef } from "@/components/SuperDocClient";
 import { RagPanel } from "@/components/RagPanel";
 import { ThreadsPanel } from "@/components/ThreadsPanel";
@@ -14,15 +15,18 @@ import {
   type DraftRecord,
   type CorpusHit,
   type DraftSession,
+  type CurrentUser,
   apiGet,
   apiJson,
   createDraft,
   createDraftFromWorker,
   decideDraft,
   fetchDraftFile,
+  getCurrentUser,
   integrationsHealth,
   listDrafts,
   listVersions,
+  logout,
   saveDraftFile,
   syncThreads,
 } from "@/lib/cfcApi";
@@ -35,7 +39,9 @@ export function DocumentStudio({
   initialDraftId?: string;
   initialPersona?: PersonaKey;
 }) {
+  const router = useRouter();
   const editorRef = useRef<SuperDocEditorRef | null>(null);
+  const [me, setMe] = useState<CurrentUser | null>(null);
   const [persona, setPersona] = useState<PersonaKey>(initialPersona ?? "arpit");
   const [draftId, setDraftId] = useState<string | undefined>(initialDraftId);
   const [openIdInput, setOpenIdInput] = useState("");
@@ -116,6 +122,21 @@ export function DocumentStudio({
     },
     [persona, refreshRecent],
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    getCurrentUser().then((u) => {
+      if (cancelled) return;
+      if (!u) {
+        router.push("/login");
+        return;
+      }
+      setMe(u);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   useEffect(() => {
     void refreshHealth();
@@ -369,8 +390,23 @@ export function DocumentStudio({
           </p>
           <p className="mt-1 text-[11px] text-zinc-500">{health}</p>
         </div>
+        {me && (
+          <div className="flex items-center gap-2 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300">
+            <span>
+              Signed in as <span className="font-medium text-zinc-100">{me.name}</span>
+              {me.designation ? ` · ${me.designation}` : ""}
+            </span>
+            <button
+              type="button"
+              onClick={() => void logout().then(() => router.push("/login"))}
+              className="rounded border border-zinc-600 px-2 py-0.5 hover:bg-zinc-800"
+            >
+              Sign out
+            </button>
+          </div>
+        )}
         <label className="text-xs text-zinc-400">
-          Persona
+          Persona (dev)
           <select
             className="ml-2 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm"
             value={persona}

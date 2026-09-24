@@ -139,6 +139,7 @@ export async function apiGet<T>(
   const res = await fetch(`${API_BASE}${path}`, {
     headers: headers(persona),
     cache: "no-store",
+    credentials: "include",
   });
   if (!res.ok) {
     throw new Error(`${res.status} ${await res.text()}`);
@@ -157,6 +158,7 @@ export async function apiJson<T>(
       "Content-Type": "application/json",
       ...headers(persona, init.headers),
     },
+    credentials: "include",
   });
   if (!res.ok) {
     throw new Error(`${res.status} ${await res.text()}`);
@@ -174,7 +176,6 @@ export async function createDraft(
     body: JSON.stringify({
       title,
       template_code: templateCode,
-      maker_employee_id: "6281",
     }),
   });
 }
@@ -200,7 +201,6 @@ export async function createDraftFromWorker(
       replace:
         opts?.replace ?? "Quality Council of India (CFC Generated Draft)",
       tracked: opts?.tracked ?? true,
-      maker_employee_id: "6281",
     }),
   });
 }
@@ -223,6 +223,7 @@ export async function listVersions(draftId: string, persona: PersonaKey) {
 export async function fetchDraftFile(draftId: string): Promise<File> {
   const res = await fetch(`${API_BASE}/drafts/${draftId}/file`, {
     cache: "no-store",
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`File load failed: ${res.status}`);
   const blob = await res.blob();
@@ -251,6 +252,7 @@ export async function saveDraftFile(
       "X-CFC-Save-Trigger": trigger,
     },
     body: form,
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`Save failed: ${res.status} ${await res.text()}`);
   return res.json() as Promise<{
@@ -351,6 +353,7 @@ export async function patchThread(
       "X-CFC-User": PERSONAS[persona].header,
     },
     body: JSON.stringify(body),
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json() as Promise<ThreadRecord>;
@@ -421,6 +424,7 @@ export async function uploadCorpusFile(
     method: "POST",
     headers: { "X-CFC-User": PERSONAS[persona].header },
     body: form,
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json() as Promise<{
@@ -457,6 +461,7 @@ export async function uploadCorpusTemplate(
     method: "POST",
     headers: { "X-CFC-User": PERSONAS[persona].header },
     body: form,
+    credentials: "include",
   });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json() as Promise<{ ok: boolean; template_code: string; path: string }>;
@@ -503,6 +508,7 @@ export async function streamAgentChat(
     },
     body: JSON.stringify(body),
     signal,
+    credentials: "include",
   });
   if (!res.ok || !res.body) {
     throw new Error(`${res.status} ${await res.text()}`);
@@ -558,6 +564,56 @@ export async function fetchDraftDiff(
     `/drafts/${draftId}/diff?from_version=${fromVersion}&to_version=${toVersion}`,
     persona,
   );
+}
+
+export type CurrentUser = {
+  id: string;
+  name: string;
+  email: string;
+  designation?: string | null;
+  cfc_role: string;
+  division_code?: string | null;
+  is_admin?: boolean;
+};
+
+export async function requestMagicLink(
+  email: string,
+): Promise<{ ok: boolean; delivery?: string; link?: string }> {
+  const res = await fetch(`${API_BASE}/auth/magic-link`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+    credentials: "include",
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export async function verifyMagicLink(
+  token: string,
+): Promise<{ ok: boolean; email: string; ttl_hours: number }> {
+  const res = await fetch(
+    `${API_BASE}/auth/verify?token=${encodeURIComponent(token)}`,
+    { credentials: "include" },
+  );
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json();
+}
+
+export async function logout(): Promise<void> {
+  await fetch(`${API_BASE}/auth/logout`, {
+    method: "POST",
+    credentials: "include",
+  });
+}
+
+export async function getCurrentUser(): Promise<CurrentUser | null> {
+  const res = await fetch(`${API_BASE}/me`, {
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (!res.ok) return null;
+  return res.json();
 }
 
 export async function ragQuery(

@@ -134,7 +134,10 @@ def _bucket() -> Bucket:
 class CreateDraftBody(BaseModel):
     title: str = "Work Order Extension Draft"
     template_code: str = "WO_EXTENSION"
-    maker_employee_id: str = "6281"
+    # None (the default) means "the caller" — resolved from the authenticated
+    # session, not a hardcoded persona. Only an explicit value here overrides it
+    # (e.g. an admin creating on behalf of someone else).
+    maker_employee_id: str | None = None
 
 
 class DecideBody(BaseModel):
@@ -178,7 +181,7 @@ class CreateFromWorkerBody(BaseModel):
     find: str = "Quality Council of India"
     replace: str = "Quality Council of India (CFC Generated Draft)"
     tracked: bool = True
-    maker_employee_id: str = "6281"
+    maker_employee_id: str | None = None
 
 
 class AgentChatBody(BaseModel):
@@ -559,13 +562,19 @@ def auth_verify(token: str, response: Response) -> dict[str, Any]:
             )
         jwt_token = auth_mod.issue_jwt(email, employee_id=u.employee_id)
 
+    # Web and API live on separate Railway subdomains (cross-site, not just
+    # cross-origin) — SameSite=Lax cookies are never sent on cross-site
+    # fetch()/XHR, only on top-level navigation. SameSite=None is required
+    # for the session cookie to actually reach the API, and browsers require
+    # Secure whenever SameSite=None is set.
+    cookie_secure = os.environ.get("CFC_COOKIE_SECURE", "false").lower() == "true"
     response.set_cookie(
         key="cfc_session",
         value=jwt_token,
         max_age=auth_mod.JWT_TTL_HOURS * 3600,
         httponly=True,
-        secure=os.environ.get("CFC_COOKIE_SECURE", "false").lower() == "true",
-        samesite="lax",
+        secure=cookie_secure,
+        samesite="none" if cookie_secure else "lax",
         path="/",
     )
     return {"ok": True, "email": email, "ttl_hours": auth_mod.JWT_TTL_HOURS}
@@ -608,9 +617,10 @@ def hierarchy_tree(s: Session = Depends(get_session)) -> dict[str, Any]:
 def create_draft(
     body: CreateDraftBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     maker_id = body.maker_employee_id or user.employee_id
     maker = s.get(User, maker_id) or user
     if not TEMPLATE.exists():
@@ -663,9 +673,10 @@ def create_draft(
 def get_draft(
     draft_id: str,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     return {"draft": _draft_to_dict(draft), "session": _session_for(s, user, draft)}
 
@@ -675,9 +686,10 @@ def get_draft(
 def get_session_endpoint(
     draft_id: str,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     return _session_for(s, user, draft)
 
@@ -709,9 +721,10 @@ async def put_file(
     file: UploadFile = File(...),
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
     x_cfc_save_trigger: str | None = Header(default="manual", alias="X-CFC-Save-Trigger"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     session = _session_for(s, user, draft)
     if not session["can_save"]:
@@ -773,6 +786,7 @@ def draft_diff(
     from_version: int,
     to_version: int,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Unified diff of extracted paragraph text between two draft versions.
@@ -782,7 +796,7 @@ def draft_diff(
     """
     import difflib
 
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     if not _can_view_division(user, draft.division_code):
         raise HTTPException(status_code=403, detail="Cross-division access denied")
@@ -860,10 +874,11 @@ def list_versions(
 @app.get("/drafts")
 def list_drafts(
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """List drafts visible to caller (own division, or apex/admin sees all)."""
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     stmt = select(Draft).options(selectinload(Draft.versions), selectinload(Draft.approvals))
     if user.cfc_role != "apex" and not user.is_admin:
         stmt = stmt.where(Draft.division_code == user.division_code)
@@ -884,9 +899,10 @@ def list_drafts(
 def submit_draft(
     draft_id: str,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     session = _session_for(s, user, draft)
     if not session["can_submit"]:
@@ -917,9 +933,10 @@ def decide_draft(
     draft_id: str,
     body: DecideBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     session = _session_for(s, user, draft)
 
@@ -1005,9 +1022,10 @@ def decide_draft(
 @app.get("/approvals/inbox")
 def approvals_inbox(
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     stmt = (
         select(Draft)
         .options(
@@ -1091,9 +1109,10 @@ def _check_visibility(user: User, draft: Draft) -> None:
 def list_threads(
     draft_id: str,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     _check_visibility(user, draft)
     threads = (
@@ -1123,9 +1142,10 @@ def create_thread(
     draft_id: str,
     body: ThreadCreateBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     _check_visibility(user, draft)
     if not body.body.strip():
@@ -1166,9 +1186,10 @@ def patch_thread(
     thread_id: str,
     body: ThreadPatchBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     _check_visibility(user, draft)
     t = s.get(Thread, thread_id)
@@ -1208,6 +1229,7 @@ def sync_threads(
     draft_id: str,
     body: ThreadsSyncBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Batch mirror from SuperDoc: upsert each incoming thread by id.
@@ -1215,7 +1237,7 @@ def sync_threads(
     Best-effort — SuperDoc's comments API surface varies. The frontend calls this
     on save with whatever it can extract; missing anchors are fine.
     """
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     _check_visibility(user, draft)
 
@@ -1272,10 +1294,11 @@ def sync_threads(
 def create_draft_from_worker(
     body: CreateFromWorkerBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
-    maker = s.get(User, body.maker_employee_id) or user
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    maker = (s.get(User, body.maker_employee_id) if body.maker_employee_id else None) or user
 
     payload = json.dumps(
         {
@@ -1384,9 +1407,10 @@ def get_corpus_stats(s: Session = Depends(get_session)) -> dict[str, Any]:
 def corpus_documents(
     limit: int = 100,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     if db_has_corpus(s):
         return {"items": db_list_documents(s, limit=limit, user=user)}
     return {"items": inmem_list(limit=limit)}
@@ -1396,9 +1420,10 @@ def corpus_documents(
 def corpus_document(
     doc_id: str,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     doc = db_get_document(s, doc_id, user=user) if db_has_corpus(s) else inmem_get(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="document not found")
@@ -1411,9 +1436,10 @@ def corpus_search(
     request: Request,
     body: SearchBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     if db_has_corpus(s):
         hits = db_search(
             s, body.query, user=user, limit=body.limit, ministry=body.ministry, domain=body.domain
@@ -1429,9 +1455,10 @@ def rag_query(
     request: Request,
     body: RagBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     if db_has_corpus(s):
         hits = db_search(
             s, body.query, user=user, limit=body.limit, ministry=body.ministry, domain=None
@@ -1478,12 +1505,13 @@ async def corpus_upload(
     ministry: str | None = Form(default=None),
     domain: str | None = Form(default=None),
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Maker (or higher) uploads a Work Order into their division's ingest bucket."""
     from .ingest import _extract_upload, ingest_one  # noqa: PLC0415 deferred (fastembed cold)
 
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     if user.cfc_role not in ("maker", "l1_approver", "l2_approver", "apex") and not user.is_admin:
         raise HTTPException(status_code=403, detail="Not permitted to upload to corpus")
     ext = Path(file.filename or "").suffix.lower()
@@ -1530,10 +1558,11 @@ async def corpus_upload(
 @app.get("/corpus/templates")
 def list_templates(
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """List DOCX templates under packages/doc-fixtures/templates/. Any authed persona can list."""
-    _resolve_user(s, x_cfc_user)  # auth gate
+    _resolve_user(s, x_cfc_user, cfc_session)  # auth gate
     templates_dir = ROOT / "packages" / "doc-fixtures" / "templates"
     items: list[dict[str, Any]] = []
     if templates_dir.exists():
@@ -1556,10 +1585,11 @@ async def corpus_template_upload(
     file: UploadFile = File(...),
     template_code: str = Form(default=""),
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Admin uploads a .docx template into packages/doc-fixtures/templates."""
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin only")
     ext = Path(file.filename or "").suffix.lower()
@@ -1659,6 +1689,7 @@ def agent_chat(
     draft_id: str,
     body: AgentChatBody,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
 ) -> StreamingResponse:
     """Server-Sent Events stream driving one agent conversation to completion.
 
@@ -1669,7 +1700,7 @@ def agent_chat(
         # Own session for the whole conversation so tool mutations commit cleanly.
         s = SessionLocal()
         try:
-            user = _resolve_user(s, x_cfc_user)
+            user = _resolve_user(s, x_cfc_user, cfc_session)
             draft = _load_draft(s, draft_id)
             session_flags = _session_for(s, user, draft)
 
@@ -1808,6 +1839,7 @@ def corpus_reindex(
     background_tasks: BackgroundTasks,
     force: bool = False,
     x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Admin: rebuild the corpus index. Runs in the background so the HTTP
@@ -1818,7 +1850,7 @@ def corpus_reindex(
 
     Poll `GET /corpus/reindex/status` for progress.
     """
-    user = _resolve_user(s, x_cfc_user)
+    user = _resolve_user(s, x_cfc_user, cfc_session)
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin only")
     if _reindex_state.get("status") == "running":
