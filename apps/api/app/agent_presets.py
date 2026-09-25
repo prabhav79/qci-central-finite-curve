@@ -18,6 +18,8 @@ Future (Sprint 4.5+):
 """
 from __future__ import annotations
 
+from typing import Any
+
 # Narrative order for a generated Work Order — deliberately NOT the regex
 # priority order in chunking.py (that list is tuned for label-matching
 # specificity, not reading order).
@@ -30,6 +32,72 @@ GENERATION_SECTIONS: list[tuple[str, str]] = [
     ("payment_milestones", "Payment Milestones"),
     ("general_terms", "General Terms"),
 ]
+
+# Generic display title for a section label when it isn't otherwise named by
+# the chosen template's own outline (e.g. when deriving an outline from an
+# existing corpus document's chunk labels — see corpus_db.db_document_outline).
+SECTION_TITLES: dict[str, str] = dict(GENERATION_SECTIONS)
+
+# Selectable document structures for "New draft". Each is just an ordered
+# list of (section_label, section_title) pairs that drives the draft_generator
+# loop — there is no per-catalog-entry seed .docx; every catalog-driven draft
+# starts from the same blank file (packages/doc-fixtures/templates/BLANK.docx)
+# and the *structure* comes entirely from this outline, not from pre-existing
+# document content. Structures below are standard/generic forms synthesized
+# from public Indian government procurement and CSR guidance (GFR consultancy
+# manual, NRIDA/SFURTI DPR templates, NBCFDC CSR proposal format) — section
+# shapes only, no proposal text copied from any source.
+TEMPLATE_CATALOG: dict[str, dict[str, Any]] = {
+    "BLANK": {
+        "label": "Blank canvas (standard Work Order structure)",
+        "description": "No fixed government format — the standard QCI Work Order shape.",
+        "outline": GENERATION_SECTIONS,
+    },
+    "GRIEVANCE_REDRESSAL_WO": {
+        "label": "Grievance Redressal Work Order (CPGRAMS-style)",
+        "description": "For engagements modeled on QCI's CPGRAMS-type grievance redressal work.",
+        "outline": GENERATION_SECTIONS,
+    },
+    "DPR_STANDARD": {
+        "label": "Detailed Project Report (DPR)",
+        "description": "Standard Indian government scheme DPR shape (NRIDA/SFURTI-style).",
+        "outline": [
+            ("background", "Background & Rationale"),
+            ("objectives", "Project Objectives"),
+            ("stakeholder_analysis", "Stakeholder Analysis"),
+            ("methodology", "Implementation Strategy & Methodology"),
+            ("timeline", "Project Timeline"),
+            ("cost_financials", "Project Cost & Financial Plan"),
+            ("monitoring_evaluation", "Monitoring & Evaluation Framework"),
+            ("sustainability", "Sustainability Plan"),
+        ],
+    },
+    "QCBS_CONSULTANCY": {
+        "label": "QCBS Technical Consultancy Proposal",
+        "description": "GFR-style Quality & Cost Based Selection technical proposal shape.",
+        "outline": [
+            ("tor_understanding", "Understanding of Terms of Reference"),
+            ("approach_methodology", "Approach & Methodology"),
+            ("work_plan", "Work Plan & Schedule"),
+            ("team_composition", "Team Composition & Key Personnel"),
+            ("deliverables", "Deliverables"),
+            ("past_experience", "Past Experience & Track Record"),
+        ],
+    },
+    "CSR_PROJECT_PROPOSAL": {
+        "label": "CSR Project Proposal",
+        "description": "Standard corporate CSR project proposal shape (NBCFDC-style).",
+        "outline": [
+            ("executive_summary", "Executive Summary"),
+            ("background_problem", "Background & Problem Statement"),
+            ("objectives", "Project Objectives"),
+            ("target_beneficiaries", "Target Beneficiaries"),
+            ("implementation_plan", "Implementation Plan & Methodology"),
+            ("expected_outcomes", "Expected Outcomes & Impact"),
+            ("budget", "Budget"),
+        ],
+    },
+}
 
 PRECEDENT_WEAVER_SYSTEM = """You are the CFC Precedent Weaver — an assistant embedded inside a
 SuperDoc editor at Quality Council of India (QCI). Your job is to help the

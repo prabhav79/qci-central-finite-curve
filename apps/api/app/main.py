@@ -39,6 +39,7 @@ from .agent_llm import LLMConfig, run_agent_with_fallback
 from . import auth as auth_mod
 from .agent_presets import (
     GENERATION_SECTIONS,
+    TEMPLATE_CATALOG,
     draft_generator_system,
     draft_generator_user,
     precedent_weaver_system,
@@ -48,7 +49,7 @@ from .agent_presets import (
 )
 from .agent_tools import TOOL_SCHEMAS, AgentContext, dispatch as agent_dispatch
 from .corpus import corpus_stats as inmem_stats, get_document as inmem_get, list_documents as inmem_list, reload_corpus, search_corpus as inmem_search
-from .corpus_db import db_get_document, db_has_corpus, db_list_documents, db_search, db_stats
+from .corpus_db import db_document_outline, db_get_document, db_has_corpus, db_list_documents, db_search, db_stats
 from .db import ROOT, SessionLocal, ensure_pgvector, get_session
 from .models import AuditLog, CorpusDocument, Division, Draft, DraftApproval, DraftVersion, Thread, User
 from .rag import answer_query
@@ -58,19 +59,30 @@ from .storage import Bucket, default_bucket
 log = logging.getLogger("cfc.api")
 
 TEMPLATES_DIR = ROOT / "packages" / "doc-fixtures" / "templates"
-TEMPLATE = TEMPLATES_DIR / "WO_EXTENSION.docx"
+# Every new draft seeds from this — a genuinely empty document. Structure
+# (which sections exist, in what order) comes entirely from the chosen
+# template's `generation_outline`, not from pre-written file content. This
+# replaced WO_EXTENSION.docx as the default seed: that file is a real prior
+# QCI proposal (SVANidhi Se Samriddhi), left on disk untouched and still
+# searchable in the corpus, but it should never again be silently copied into
+# every new draft regardless of what the user asked for.
+TEMPLATE = TEMPLATES_DIR / "BLANK.docx"
 DOC_WORKER_URL = os.environ.get("DOC_WORKER_URL", "http://127.0.0.1:8100").rstrip("/")
 
 
 def _resolve_template_path(template_code: str | None) -> Path:
-    """Map a template_code to its .docx file, matching POST /corpus/templates'
-    naming convention ({CODE}.docx). Falls back to the default template when
-    template_code is blank or names a file that doesn't exist — template_code
-    used to be stored but never actually consulted here, so every draft was
-    silently seeded from WO_EXTENSION.docx regardless of what was picked."""
-    code = (template_code or "").strip()
-    if code:
-        candidate = TEMPLATES_DIR / f"{code.upper()}.docx"
+    """Map a template_code to its seed .docx.
+
+    Catalog codes (agent_presets.TEMPLATE_CATALOG) and corpus_doc-derived
+    drafts always seed from the blank file — their *content* comes entirely
+    from draft_generator, never a pre-written file. An admin-uploaded custom
+    template (POST /corpus/templates, named {CODE}.docx) still wins when one
+    exists and the code isn't a catalog entry, for the legitimate case of
+    starting from a real letterhead/boilerplate file on purpose.
+    """
+    code = (template_code or "").strip().upper()
+    if code and code not in TEMPLATE_CATALOG:
+        candidate = TEMPLATES_DIR / f"{code}.docx"
         if candidate.exists():
             return candidate
     return TEMPLATE
@@ -151,7 +163,14 @@ def _bucket() -> Bucket:
 
 class CreateDraftBody(BaseModel):
     title: str = "Work Order Extension Draft"
-    template_code: str = "WO_EXTENSION"
+    template_code: str = "BLANK"
+    # "catalog" (default): template_code names an entry in TEMPLATE_CATALOG
+    # (or a legacy/admin-uploaded file code). "corpus_doc": ignore
+    # template_code's outline and derive the section structure from an
+    # existing corpus document instead (corpus_doc_id required) — its
+    # section *shape* is reused, never its actual paragraph content.
+    template_source: Literal["catalog", "corpus_doc"] = "catalog"
+    corpus_doc_id: str | None = None
     # None (the default) means "the caller" — resolved from the authenticated
     # session, not a hardcoded persona. Only an explicit value here overrides it
     # (e.g. an admin creating on behalf of someone else).
@@ -656,6 +675,19 @@ def create_draft(
     if not template_path.exists():
         raise HTTPException(status_code=500, detail=f"Template missing: {template_path}")
 
+    if body.template_source == "corpus_doc":
+        if not body.corpus_doc_id:
+            raise HTTPException(status_code=400, detail="corpus_doc_id is required when template_source=corpus_doc")
+        outline = db_document_outline(s, body.corpus_doc_id, user=user)
+        if outline is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not found, not visible to your division, or has no labeled sections: {body.corpus_doc_id}",
+            )
+    else:
+        catalog_entry = TEMPLATE_CATALOG.get(body.template_code.strip().upper())
+        outline = catalog_entry["outline"] if catalog_entry else None
+
     draft_id = uuid.uuid4().hex[:12]
     key = _version_key(draft_id, 1)
     bucket = _bucket()
@@ -671,6 +703,7 @@ def create_draft(
         division_code=maker.division_code or "QCI",
         status="DRAFT",
         current_version=1,
+        generation_outline=[list(pair) for pair in outline] if outline else None,
     )
     s.add(draft)
     s.add(
@@ -1610,6 +1643,32 @@ def list_templates(
     return {"count": len(items), "items": items}
 
 
+@app.get("/generation/templates")
+def list_generation_templates(
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Selectable document structures for the "New draft" generation flow.
+
+    Each entry is a fixed (label, title) outline, not a pre-written file —
+    every one of these seeds from the same blank document; only the section
+    structure differs. Separate from GET /corpus/templates, which lists
+    physical uploaded .docx files for the (unrelated) manual-edit path.
+    """
+    _resolve_user(s, x_cfc_user, cfc_session)  # auth gate
+    items = [
+        {
+            "template_code": code,
+            "label": entry["label"],
+            "description": entry.get("description", ""),
+            "outline": entry["outline"],
+        }
+        for code, entry in TEMPLATE_CATALOG.items()
+    ]
+    return {"items": items}
+
+
 @app.post("/corpus/templates")
 async def corpus_template_upload(
     file: UploadFile = File(...),
@@ -1784,9 +1843,14 @@ def agent_chat(
                 yield _sse({"type": "preset", "name": "draft_generator"})
                 yield _sse(start_frame)
                 template_code = str(preset_args.get("template_code") or draft.template_code or "")
+                # The outline set at draft creation (catalog pick, or derived from
+                # an existing corpus document) drives which sections get generated
+                # — GENERATION_SECTIONS is only a fallback for older drafts/codes
+                # with no stored outline.
+                outline = [(row[0], row[1]) for row in (draft.generation_outline or GENERATION_SECTIONS)]
                 generated: list[str] = []
                 failed: list[str] = []
-                for section_label, section_title in GENERATION_SECTIONS:
+                for section_label, section_title in outline:
                     yield _sse({"type": "section_start", "section": section_label, "title": section_title})
                     section_error: str | None = None
                     for frame in run_agent_with_fallback(

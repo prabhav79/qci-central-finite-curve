@@ -169,15 +169,29 @@ export async function apiJson<T>(
 export async function createDraft(
   persona: PersonaKey,
   title: string,
-  templateCode = "WO_EXTENSION",
+  templateCode = "BLANK",
+  opts?: { templateSource?: "catalog" | "corpus_doc"; corpusDocId?: string },
 ) {
   return apiJson<{ draft: DraftRecord; session: DraftSession }>("/drafts", persona, {
     method: "POST",
     body: JSON.stringify({
       title,
       template_code: templateCode,
+      template_source: opts?.templateSource ?? "catalog",
+      corpus_doc_id: opts?.corpusDocId,
     }),
   });
+}
+
+export type GenerationTemplate = {
+  template_code: string;
+  label: string;
+  description: string;
+  outline: [string, string][];
+};
+
+export async function listGenerationTemplates(persona: PersonaKey) {
+  return apiGet<{ items: GenerationTemplate[] }>("/generation/templates", persona);
 }
 
 export async function createDraftFromWorker(

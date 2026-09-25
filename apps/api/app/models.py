@@ -95,6 +95,12 @@ class Draft(Base):
     final_storage_key: Mapped[Optional[str]] = mapped_column(String(400))
     final_sha256: Mapped[Optional[str]] = mapped_column(String(64))
     worker_meta: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    # Ordered [[section_label, section_title], ...] driving draft_generator —
+    # set at creation from the chosen template's catalog outline, or derived
+    # from an existing corpus document's chunk section_labels. Null means
+    # "use the default GENERATION_SECTIONS" (older drafts, or a custom
+    # admin-uploaded template with no catalog entry).
+    generation_outline: Mapped[Optional[list[list[str]]]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False

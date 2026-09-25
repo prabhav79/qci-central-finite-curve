@@ -8,7 +8,7 @@ import { ThreadsPanel } from "@/components/ThreadsPanel";
 import { CorpusUploader } from "@/components/CorpusUploader";
 import { AgentPanel } from "@/components/AgentPanel";
 import { DecisionModal, type DecisionKind } from "@/components/DecisionModal";
-import { NewDraftModal } from "@/components/NewDraftModal";
+import { NewDraftModal, type TemplateChoice } from "@/components/NewDraftModal";
 import {
   PERSONAS,
   type PersonaKey,
@@ -158,11 +158,18 @@ export function DocumentStudio({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
-  async function onCreate(title: string, templateCode: string, brief: string) {
+  async function onCreate(title: string, brief: string, template: TemplateChoice) {
     setBusy(true);
     setError(null);
     try {
-      const res = await createDraft(persona, title, templateCode);
+      const res = await createDraft(
+        persona,
+        title,
+        template.source === "catalog" ? template.templateCode : "BLANK",
+        template.source === "corpus_doc"
+          ? { templateSource: "corpus_doc", corpusDocId: template.corpusDocId }
+          : { templateSource: "catalog" },
+      );
       setNewDraftOpen(false);
       await loadDraft(res.draft.id, persona);
       if (brief.trim()) {
@@ -543,7 +550,7 @@ export function DocumentStudio({
         persona={persona}
         busy={busy}
         onCancel={() => setNewDraftOpen(false)}
-        onConfirm={(title, templateCode, brief) => onCreate(title, templateCode, brief)}
+        onConfirm={(title, brief, template) => onCreate(title, brief, template)}
       />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_340px]">

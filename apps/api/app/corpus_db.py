@@ -118,6 +118,36 @@ def db_get_document(s: Session, doc_id: str, user: User | None = None) -> dict[s
     }
 
 
+def db_document_outline(s: Session, doc_id: str, user: User | None = None) -> list[tuple[str, str]] | None:
+    """Distinct section labels present in a document's chunks, in first-appearance
+    order — used when a user picks an EXISTING corpus document as their new
+    draft's structural template. Only the document's section shape is reused
+    (which of the standard labels it touches, and in what order); none of its
+    actual paragraph text is copied — the new draft is generated fresh against
+    this outline. Returns None if the document isn't found/visible or has no
+    labeled chunks (caller falls back to a default outline)."""
+    from .agent_presets import SECTION_TITLES  # local import: avoid a module-load cycle
+
+    stmt = select(CorpusDocument).where(CorpusDocument.doc_id == doc_id)
+    if user is not None and user.cfc_role != "apex" and not user.is_admin:
+        stmt = stmt.where(CorpusDocument.division_code == user.division_code)
+    doc = s.execute(stmt).scalar_one_or_none()
+    if not doc:
+        return None
+    labels = s.execute(
+        select(CorpusChunk.section_label)
+        .where(CorpusChunk.document_id == doc.id)
+        .order_by(CorpusChunk.chunk_index)
+    ).scalars().all()
+    seen: list[str] = []
+    for label in labels:
+        if label and label not in seen:
+            seen.append(label)
+    if not seen:
+        return None
+    return [(label, SECTION_TITLES.get(label, label.replace("_", " ").title())) for label in seen]
+
+
 def _chunk_to_hit(chunk: CorpusChunk, score: float) -> dict[str, Any]:
     doc = chunk.document
     return {
