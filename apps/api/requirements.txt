@@ -13,3 +13,4 @@ pgvector>=0.3.6
 fastembed>=0.4.2
 slowapi>=0.1.9
 pyjwt>=2.9.0
+anthropic>=0.69.0

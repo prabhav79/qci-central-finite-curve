@@ -68,6 +68,12 @@ DEFAULT_MODELS: dict[str, str] = {
     "gemini": "gemini-flash-latest",
     "google": "gemini-flash-latest",
     "groq": "llama-3.3-70b-versatile",
+    # Haiku, not Opus/Sonnet: this provider is meant for BYOK demo keys on a
+    # small prepaid budget (draft_generator's per-section calls are short —
+    # one retrieval + one ~300-word section — so the cheapest current model
+    # comfortably covers many runs without a quality cliff for this task).
+    "anthropic": "claude-haiku-4-5",
+    "claude": "claude-haiku-4-5",
     "mock": "",
 }
 
@@ -247,6 +253,76 @@ def _stream_gemini(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]
     yield {"kind": "final", "tool_calls": tool_calls, "finish_reason": kind}
 
 
+# Short, bounded generations (one retrieval + one section insert per call) —
+# capped well below the SDK's non-streaming timeout threshold on purpose, not
+# a lowballed default; this keeps a small BYOK budget from disappearing into
+# one runaway response.
+_ANTHROPIC_MAX_TOKENS = 1536
+
+
+def _anthropic_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": s["name"],
+            "description": s.get("description", ""),
+            "input_schema": s.get("parameters") or {"type": "object", "properties": {}},
+        }
+        for s in schemas
+    ]
+
+
+def _stream_anthropic(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    import anthropic as _anthropic_sdk
+
+    system_parts = [t.content for t in turns if t.role == "system" and t.content]
+    messages: list[dict[str, Any]] = []
+    for t in turns:
+        if t.role == "system":
+            continue
+        if t.role == "user":
+            messages.append({"role": "user", "content": t.content})
+        elif t.role == "assistant":
+            content: list[dict[str, Any]] = []
+            if t.content:
+                content.append({"type": "text", "text": t.content})
+            for tc in t.tool_calls:
+                content.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc.get("args") or {}})
+            messages.append({"role": "assistant", "content": content})
+        elif t.role == "tool":
+            messages.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": t.tool_call_id, "content": t.content or ""}
+                    ],
+                }
+            )
+
+    client = _anthropic_sdk.Anthropic(api_key=cfg.api_key)
+    kwargs: dict[str, Any] = {
+        "model": cfg.model or DEFAULT_MODELS.get(cfg.provider, "claude-haiku-4-5"),
+        "max_tokens": _ANTHROPIC_MAX_TOKENS,
+        "messages": messages,
+    }
+    if system_parts:
+        kwargs["system"] = "\n\n".join(system_parts)
+    if tools:
+        kwargs["tools"] = _anthropic_tools(tools)
+
+    with client.messages.stream(**kwargs) as stream:
+        for text in stream.text_stream:
+            yield {"kind": "text", "text": text}
+        final = stream.get_final_message()
+
+    tool_calls = [
+        {"id": b.id, "name": b.name, "args": b.input}
+        for b in final.content
+        if b.type == "tool_use"
+    ]
+    finish_reason = "tool_calls" if tool_calls else (final.stop_reason or "stop")
+    yield {"kind": "final", "tool_calls": tool_calls, "finish_reason": finish_reason}
+
+
 def _stream_mock(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
     """Deterministic script for smoke tests.
 
@@ -325,6 +401,8 @@ _PROVIDER_STREAMS: dict[str, Callable[[LLMConfig, list[Turn], list[dict[str, Any
     "gemini": _stream_gemini,
     "google": _stream_gemini,
     "groq": _stream_groq,
+    "anthropic": _stream_anthropic,
+    "claude": _stream_anthropic,
     "mock": _stream_mock,
 }
 

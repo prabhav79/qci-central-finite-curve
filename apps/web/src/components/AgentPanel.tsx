@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AgentFrame, type PersonaKey, streamAgentChat } from "@/lib/cfcApi";
 
-type Provider = "mock" | "gemini" | "openai";
+type Provider = "mock" | "gemini" | "openai" | "anthropic";
 
 type LogEntry =
   | { kind: "start"; text: string }
@@ -19,6 +19,10 @@ const PROVIDER_MODELS: Record<Provider, string> = {
   mock: "",
   gemini: "gemini-2.0-flash",
   openai: "gpt-4o-mini",
+  // Haiku, not Opus/Sonnet — this provider is meant for BYOK keys on a small
+  // prepaid budget; see agent_llm.py's DEFAULT_MODELS for the same choice
+  // server-side (this is only the placeholder shown before a key is typed).
+  anthropic: "claude-haiku-4-5",
 };
 
 export function AgentPanel({
@@ -202,8 +206,8 @@ export function AgentPanel({
 
       {draftId && (
         <>
-          <div className="grid grid-cols-3 gap-1 text-[10px]">
-            {(["mock", "gemini", "openai"] as Provider[]).map((p) => (
+          <div className="grid grid-cols-4 gap-1 text-[10px]">
+            {(["mock", "gemini", "openai", "anthropic"] as Provider[]).map((p) => (
               <button
                 key={p}
                 type="button"

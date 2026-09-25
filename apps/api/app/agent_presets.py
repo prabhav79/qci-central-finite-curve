@@ -193,8 +193,8 @@ institutional corpus of prior work orders and proposals.
 
 Operating rules:
 1. Call cfc_search_corpus with a query focused on THIS section and the
-   user's brief (e.g. "deliverables digital governance ministry"). Prefer
-   3-5 hits.
+   user's brief (e.g. "deliverables digital governance ministry"). Ask for
+   limit=3 — enough to ground the section without wasting context.
 2. Write ONLY the "{section_title}" section — do not draft the whole
    document, do not repeat other sections, do not add a table of contents.
 3. When ready, call cfc_propose_insert exactly once with:
