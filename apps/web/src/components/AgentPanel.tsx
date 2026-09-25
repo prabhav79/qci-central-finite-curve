@@ -84,7 +84,7 @@ export function AgentPanel({
                   ...L,
                   {
                     kind: "start",
-                    text: `${frame.provider} · v${frame.version}${frame.tracked ? " · tracked" : ""}${
+                    text: `${frame.providers.join(" → ")} · v${frame.version}${frame.tracked ? " · tracked" : ""}${
                       frame.can_run_agent_mutate ? "" : " · read-only"
                     }`,
                   },

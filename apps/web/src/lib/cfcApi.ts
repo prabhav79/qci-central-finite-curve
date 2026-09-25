@@ -476,7 +476,7 @@ export async function reindexCorpus(persona: PersonaKey) {
 }
 
 export type AgentFrame =
-  | { type: "start"; draft_id: string; version: number; provider: string; tracked: boolean; can_run_agent_mutate: boolean }
+  | { type: "start"; draft_id: string; version: number; providers: string[]; tracked: boolean; can_run_agent_mutate: boolean }
   | { type: "preset"; name: string }
   | { type: "token"; text: string }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
