@@ -15,6 +15,34 @@ type LogEntry =
   | { kind: "error"; text: string }
   | { kind: "done"; text: string };
 
+// Remembers a BYOK key per provider, per browser — never sent anywhere but
+// straight to /agent/chat (same as typing it in fresh). Deliberately client-
+// side only: the project's BYOK design has no server-side key storage, so
+// "remembering" a key has to live in the browser, not the account.
+function apiKeyStorageKey(p: Provider): string {
+  return `cfc.agentApiKey.${p}`;
+}
+
+function loadStoredApiKey(p: Provider): string {
+  try {
+    return window.localStorage.getItem(apiKeyStorageKey(p)) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function storeApiKey(p: Provider, value: string): void {
+  try {
+    if (value) {
+      window.localStorage.setItem(apiKeyStorageKey(p), value);
+    } else {
+      window.localStorage.removeItem(apiKeyStorageKey(p));
+    }
+  } catch {
+    // Private browsing / blocked storage — key just won't persist.
+  }
+}
+
 const PROVIDER_MODELS: Record<Provider, string> = {
   mock: "",
   gemini: "gemini-2.0-flash",
@@ -47,6 +75,11 @@ export function AgentPanel({
 }) {
   const [provider, setProvider] = useState<Provider>("mock");
   const [apiKey, setApiKey] = useState("");
+
+  function updateApiKey(value: string) {
+    setApiKey(value);
+    storeApiKey(provider, value);
+  }
   const [model, setModel] = useState("");
   const [prompt, setPrompt] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -214,6 +247,7 @@ export function AgentPanel({
                 onClick={() => {
                   setProvider(p);
                   setModel("");
+                  setApiKey(loadStoredApiKey(p));
                 }}
                 className={`rounded px-1 py-1 uppercase tracking-wide ${
                   provider === p ? "bg-zinc-700 text-zinc-100" : "bg-zinc-950 text-zinc-500 hover:text-zinc-300"
@@ -228,8 +262,8 @@ export function AgentPanel({
             <input
               type="password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={`${provider} API key (BYOK — not stored server-side)`}
+              onChange={(e) => updateApiKey(e.target.value)}
+              placeholder={`${provider} API key (BYOK — remembered in this browser only)`}
               className="mt-1.5 w-full rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 font-mono text-[10px] text-zinc-100"
             />
           )}
