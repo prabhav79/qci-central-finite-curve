@@ -5,6 +5,11 @@ drive the standard agent loop toward a specific outcome.
 MVP presets:
 - precedent_weaver: pull a similar prior WO / proposal from the corpus and
   propose section-appropriate insertions into the current draft.
+- draft_generator: generate a full first draft from a natural-language brief,
+  one section at a time (see main.py's agent_chat — each section runs as its
+  own bounded agent turn rather than one long conversation, since a full
+  7-section document needs more tool-call rounds than agent_llm.MAX_STEPS
+  allows for a single run_agent conversation).
 
 Future (Sprint 4.5+):
 - redline_extender: L1/L2 preset that surfaces likely tracked-change zones
@@ -12,6 +17,19 @@ Future (Sprint 4.5+):
 - completeness_rater, clarity_pass, citation_auditor, etc.
 """
 from __future__ import annotations
+
+# Narrative order for a generated Work Order — deliberately NOT the regex
+# priority order in chunking.py (that list is tuned for label-matching
+# specificity, not reading order).
+GENERATION_SECTIONS: list[tuple[str, str]] = [
+    ("background", "Background"),
+    ("scope_of_work", "Scope of Work"),
+    ("deliverables", "Deliverables"),
+    ("duration", "Duration"),
+    ("composition_manpower", "Composition & Manpower"),
+    ("payment_milestones", "Payment Milestones"),
+    ("general_terms", "General Terms"),
+]
 
 PRECEDENT_WEAVER_SYSTEM = """You are the CFC Precedent Weaver — an assistant embedded inside a
 SuperDoc editor at Quality Council of India (QCI). Your job is to help the
@@ -97,4 +115,57 @@ def redline_extender_user(task: str, focus_areas: str = "", hints: str = "") -> 
         task=task.strip() or "Review this draft against QCI precedent and propose redlines.",
         focus_areas=focus_areas.strip() or "(none — use your judgement)",
         hints=hints.strip() or "(none)",
+    )
+
+
+DRAFT_GENERATOR_SYSTEM_TEMPLATE = """You are the CFC Draft Generator — an assistant embedded inside a
+SuperDoc editor at Quality Council of India (QCI). You are drafting ONE
+section of a brand-new Work Order / Proposal, grounded in QCI's
+institutional corpus of prior work orders and proposals.
+
+Operating rules:
+1. Call cfc_search_corpus with a query focused on THIS section and the
+   user's brief (e.g. "deliverables digital governance ministry"). Prefer
+   3-5 hits.
+2. Write ONLY the "{section_title}" section — do not draft the whole
+   document, do not repeat other sections, do not add a table of contents.
+3. When ready, call cfc_propose_insert exactly once with:
+   - position: "end" (sections are generated in order and appended)
+   - text: start with a "## {section_title}" heading line, then
+     well-formatted plain-text content for this section only (roughly
+     150-350 words)
+   - citation: the source doc_id you drew from, if any
+4. NEVER invent facts, numbers, or dates. If the corpus has nothing relevant
+   for this section, still call cfc_propose_insert with a short placeholder
+   noting the maker needs to fill this section in manually — do not skip
+   the tool call, every section must exist in the draft.
+5. All results respect the caller's division silo — you cannot see other
+   boards' documents.
+
+Be terse. When done, state in one sentence which precedent (if any) you
+drew from.
+"""
+
+DRAFT_GENERATOR_USER_TEMPLATE = """Overall brief: {task}
+
+Section to draft now: {section_title} ({section_label})
+Template: {template_code}
+"""
+
+
+def draft_generator_system(section_title: str) -> str:
+    return DRAFT_GENERATOR_SYSTEM_TEMPLATE.format(section_title=section_title)
+
+
+def draft_generator_user(
+    task: str,
+    section_label: str,
+    section_title: str,
+    template_code: str = "",
+) -> str:
+    return DRAFT_GENERATOR_USER_TEMPLATE.format(
+        task=task.strip() or "Draft a Work Order based on the selected template.",
+        section_label=section_label,
+        section_title=section_title,
+        template_code=template_code or "WO_EXTENSION",
     )

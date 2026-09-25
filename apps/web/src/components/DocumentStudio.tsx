@@ -62,6 +62,7 @@ export function DocumentStudio({
     | null
   >(null);
   const [newDraftOpen, setNewDraftOpen] = useState(false);
+  const [pendingGeneration, setPendingGeneration] = useState<{ preset: string; prompt: string } | null>(null);
   const fileRev = useMemo(
     () => (file ? `${file.name}-${file.size}-${file.lastModified}` : "none"),
     [file],
@@ -157,13 +158,16 @@ export function DocumentStudio({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
-  async function onCreate(title: string, templateCode: string) {
+  async function onCreate(title: string, templateCode: string, brief: string) {
     setBusy(true);
     setError(null);
     try {
       const res = await createDraft(persona, title, templateCode);
       setNewDraftOpen(false);
       await loadDraft(res.draft.id, persona);
+      if (brief.trim()) {
+        setPendingGeneration({ preset: "draft_generator", prompt: brief.trim() });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       throw e;
@@ -539,7 +543,7 @@ export function DocumentStudio({
         persona={persona}
         busy={busy}
         onCancel={() => setNewDraftOpen(false)}
-        onConfirm={(title, templateCode) => onCreate(title, templateCode)}
+        onConfirm={(title, templateCode, brief) => onCreate(title, templateCode, brief)}
       />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_340px]">
@@ -728,6 +732,8 @@ export function DocumentStudio({
               setThreadsRefreshKey((k) => k + 1);
             }}
             onThreadsChanged={() => setThreadsRefreshKey((k) => k + 1)}
+            autoRun={pendingGeneration}
+            onAutoRunConsumed={() => setPendingGeneration(null)}
           />
 
           <CorpusUploader

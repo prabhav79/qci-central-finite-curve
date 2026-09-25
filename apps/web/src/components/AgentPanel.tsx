@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AgentFrame, type PersonaKey, streamAgentChat } from "@/lib/cfcApi";
 
 type Provider = "mock" | "gemini" | "openai";
@@ -11,6 +11,7 @@ type LogEntry =
   | { kind: "tool_call"; tool: string; args: string; id: string }
   | { kind: "tool_result"; tool: string; ok: boolean; snippet: string; id: string }
   | { kind: "draft_updated"; version: number; tracked: boolean }
+  | { kind: "section"; text: string; ok?: boolean }
   | { kind: "error"; text: string }
   | { kind: "done"; text: string };
 
@@ -26,12 +27,19 @@ export function AgentPanel({
   canRunAgent,
   onDraftUpdated,
   onThreadsChanged,
+  autoRun,
+  onAutoRunConsumed,
 }: {
   draftId: string | undefined;
   persona: PersonaKey;
   canRunAgent: boolean;
   onDraftUpdated?: (version: number) => void;
   onThreadsChanged?: () => void;
+  /** Fire a preset immediately once this draft is ready — used to kick off
+   * generation right after "Create & generate" in NewDraftModal, without
+   * requiring the user to also type into this panel and click a button. */
+  autoRun?: { preset: string; prompt: string } | null;
+  onAutoRunConsumed?: () => void;
 }) {
   const [provider, setProvider] = useState<Provider>("mock");
   const [apiKey, setApiKey] = useState("");
@@ -48,8 +56,10 @@ export function AgentPanel({
   const canSend = !!draftId && !!prompt.trim() && !streaming && (!needsKey || !!apiKey.trim());
 
   const send = useCallback(
-    async (preset?: string) => {
+    async (preset?: string, promptOverride?: string) => {
       if (!draftId) return;
+      const effectivePrompt = (promptOverride ?? prompt).trim();
+      if (!effectivePrompt) return;
       setStreaming(true);
       setOutput("");
       setLog([]);
@@ -61,7 +71,7 @@ export function AgentPanel({
           draftId,
           persona,
           {
-            prompt: prompt.trim(),
+            prompt: effectivePrompt,
             provider,
             api_key: needsKey ? apiKey.trim() : undefined,
             model: effectiveModel || undefined,
@@ -123,9 +133,29 @@ export function AgentPanel({
                 ]);
                 onDraftUpdated?.(frame.version);
                 break;
-              case "done":
-                setLog((L) => [...L, { kind: "done", text: frame.reason }]);
+              case "section_start":
+                setLog((L) => [...L, { kind: "section", text: `Drafting ${frame.title}…` }]);
                 break;
+              case "section_result":
+                setLog((L) => [
+                  ...L,
+                  {
+                    kind: "section",
+                    text: frame.ok ? `${frame.section} done` : `${frame.section} failed: ${frame.error ?? "unknown error"}`,
+                    ok: frame.ok,
+                  },
+                ]);
+                break;
+              case "done": {
+                const gen = frame.sections_generated;
+                const failed = frame.sections_failed;
+                const summary =
+                  gen || failed
+                    ? `${frame.reason} · ${gen?.length ?? 0} generated${failed?.length ? `, ${failed.length} failed` : ""}`
+                    : frame.reason;
+                setLog((L) => [...L, { kind: "done", text: summary }]);
+                break;
+              }
               case "error":
                 setError(frame.message);
                 setLog((L) => [...L, { kind: "error", text: frame.message }]);
@@ -145,6 +175,14 @@ export function AgentPanel({
     },
     [apiKey, draftId, effectiveModel, needsKey, onDraftUpdated, persona, prompt, provider],
   );
+
+  useEffect(() => {
+    if (!autoRun || !draftId || streaming) return;
+    setPrompt(autoRun.prompt);
+    void send(autoRun.preset, autoRun.prompt);
+    onAutoRunConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRun, draftId]);
 
   function cancel() {
     abortRef.current?.abort();
@@ -294,6 +332,12 @@ export function AgentPanel({
                     <div className="text-emerald-300">
                       <span className="mr-1 text-[9px] uppercase text-emerald-500">draft</span>
                       v{entry.version} written{entry.tracked ? " (tracked)" : ""}
+                    </div>
+                  )}
+                  {entry.kind === "section" && (
+                    <div className={entry.ok === false ? "text-red-400" : "text-amber-300"}>
+                      <span className="mr-1 text-[9px] uppercase text-amber-500">section</span>
+                      {entry.text}
                     </div>
                   )}
                   {entry.kind === "done" && (

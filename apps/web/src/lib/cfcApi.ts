@@ -482,7 +482,9 @@ export type AgentFrame =
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; id: string; name: string; result: Record<string, unknown> }
   | { type: "draft_updated"; version: number; sha256: string; tracked: boolean }
-  | { type: "done"; reason: string }
+  | { type: "section_start"; section: string; title: string }
+  | { type: "section_result"; section: string; ok: boolean; error?: string | null }
+  | { type: "done"; reason: string; sections_generated?: string[]; sections_failed?: string[] }
   | { type: "error"; message: string };
 
 export async function streamAgentChat(

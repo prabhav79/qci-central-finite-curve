@@ -38,6 +38,9 @@ from sqlalchemy.orm import Session, selectinload
 from .agent_llm import LLMConfig, run_agent_with_fallback
 from . import auth as auth_mod
 from .agent_presets import (
+    GENERATION_SECTIONS,
+    draft_generator_system,
+    draft_generator_user,
     precedent_weaver_system,
     precedent_weaver_user,
     redline_extender_system,
@@ -54,8 +57,23 @@ from .storage import Bucket, default_bucket
 
 log = logging.getLogger("cfc.api")
 
-TEMPLATE = ROOT / "packages" / "doc-fixtures" / "templates" / "WO_EXTENSION.docx"
+TEMPLATES_DIR = ROOT / "packages" / "doc-fixtures" / "templates"
+TEMPLATE = TEMPLATES_DIR / "WO_EXTENSION.docx"
 DOC_WORKER_URL = os.environ.get("DOC_WORKER_URL", "http://127.0.0.1:8100").rstrip("/")
+
+
+def _resolve_template_path(template_code: str | None) -> Path:
+    """Map a template_code to its .docx file, matching POST /corpus/templates'
+    naming convention ({CODE}.docx). Falls back to the default template when
+    template_code is blank or names a file that doesn't exist — template_code
+    used to be stored but never actually consulted here, so every draft was
+    silently seeded from WO_EXTENSION.docx regardless of what was picked."""
+    code = (template_code or "").strip()
+    if code:
+        candidate = TEMPLATES_DIR / f"{code.upper()}.docx"
+        if candidate.exists():
+            return candidate
+    return TEMPLATE
 
 load_dotenv(ROOT / ".env", override=True)
 load_dotenv(override=True)
@@ -634,13 +652,14 @@ def create_draft(
     user = _resolve_user(s, x_cfc_user, cfc_session)
     maker_id = body.maker_employee_id or user.employee_id
     maker = s.get(User, maker_id) or user
-    if not TEMPLATE.exists():
-        raise HTTPException(status_code=500, detail=f"Template missing: {TEMPLATE}")
+    template_path = _resolve_template_path(body.template_code)
+    if not template_path.exists():
+        raise HTTPException(status_code=500, detail=f"Template missing: {template_path}")
 
     draft_id = uuid.uuid4().hex[:12]
     key = _version_key(draft_id, 1)
     bucket = _bucket()
-    bucket.put_file(key, TEMPLATE)
+    bucket.put_file(key, template_path)
     dest = bucket.get_path(key)
     sha = _sha256_file(dest)
 
@@ -1723,26 +1742,6 @@ def agent_chat(
             preset = (body.preset or "").lower().strip()
             preset_args = body.preset_args or {}
 
-            if preset in {"precedent_weaver", "precedent-weaver"}:
-                system_prompt = precedent_weaver_system()
-                user_prompt = precedent_weaver_user(
-                    task=body.prompt,
-                    hints=str(preset_args.get("hints", "")),
-                    focus_areas=str(preset_args.get("focus_areas", "")),
-                )
-                yield _sse({"type": "preset", "name": "precedent_weaver"})
-            elif preset in {"redline_extender", "redline-extender"}:
-                system_prompt = redline_extender_system()
-                user_prompt = redline_extender_user(
-                    task=body.prompt,
-                    focus_areas=str(preset_args.get("focus_areas", "")),
-                    hints=str(preset_args.get("hints", "")),
-                )
-                yield _sse({"type": "preset", "name": "redline_extender"})
-            else:
-                system_prompt = DEFAULT_AGENT_SYSTEM
-                user_prompt = body.prompt
-
             ctx = AgentContext(session=s, user=user, draft=draft, session_flags=session_flags)
 
             def dispatch(name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -1765,16 +1764,79 @@ def agent_chat(
             )
             s.commit()
 
-            yield _sse(
-                {
-                    "type": "start",
-                    "draft_id": draft_id,
-                    "version": draft.current_version,
-                    "providers": [c.provider for c in configs],
-                    "tracked": session_flags.get("agent_change_mode") == "tracked",
-                    "can_run_agent_mutate": session_flags.get("can_run_agent_mutate"),
-                }
-            )
+            start_frame = {
+                "type": "start",
+                "draft_id": draft_id,
+                "version": draft.current_version,
+                "providers": [c.provider for c in configs],
+                "tracked": session_flags.get("agent_change_mode") == "tracked",
+                "can_run_agent_mutate": session_flags.get("can_run_agent_mutate"),
+            }
+
+            if preset in {"draft_generator", "draft-generator"}:
+                # A full document needs more tool-call rounds than one bounded
+                # run_agent conversation allows (agent_llm.MAX_STEPS) — each
+                # section runs as its OWN short conversation instead, appended
+                # in order. A section failing doesn't abort the rest: a
+                # 6/7-section draft still saves the maker real time, and
+                # DraftVersion history already makes every section a
+                # recoverable checkpoint.
+                yield _sse({"type": "preset", "name": "draft_generator"})
+                yield _sse(start_frame)
+                template_code = str(preset_args.get("template_code") or draft.template_code or "")
+                generated: list[str] = []
+                failed: list[str] = []
+                for section_label, section_title in GENERATION_SECTIONS:
+                    yield _sse({"type": "section_start", "section": section_label, "title": section_title})
+                    section_error: str | None = None
+                    for frame in run_agent_with_fallback(
+                        configs=configs,
+                        system_prompt=draft_generator_system(section_title),
+                        user_prompt=draft_generator_user(body.prompt, section_label, section_title, template_code),
+                        tool_schemas=TOOL_SCHEMAS,
+                        tool_dispatch=dispatch,
+                    ):
+                        if frame["type"] == "done":
+                            continue  # per-section "done" is noise; only the overall loop emits one
+                        if frame["type"] == "error":
+                            section_error = frame.get("message")
+                        yield _sse(frame)
+                    if section_error:
+                        failed.append(section_label)
+                    else:
+                        generated.append(section_label)
+                    yield _sse({"type": "section_result", "section": section_label, "ok": not section_error, "error": section_error})
+                yield _sse(
+                    {
+                        "type": "done",
+                        "reason": "generation_complete",
+                        "sections_generated": generated,
+                        "sections_failed": failed,
+                    }
+                )
+                return
+
+            if preset in {"precedent_weaver", "precedent-weaver"}:
+                system_prompt = precedent_weaver_system()
+                user_prompt = precedent_weaver_user(
+                    task=body.prompt,
+                    hints=str(preset_args.get("hints", "")),
+                    focus_areas=str(preset_args.get("focus_areas", "")),
+                )
+                yield _sse({"type": "preset", "name": "precedent_weaver"})
+            elif preset in {"redline_extender", "redline-extender"}:
+                system_prompt = redline_extender_system()
+                user_prompt = redline_extender_user(
+                    task=body.prompt,
+                    focus_areas=str(preset_args.get("focus_areas", "")),
+                    hints=str(preset_args.get("hints", "")),
+                )
+                yield _sse({"type": "preset", "name": "redline_extender"})
+            else:
+                system_prompt = DEFAULT_AGENT_SYSTEM
+                user_prompt = body.prompt
+
+            yield _sse(start_frame)
             for frame in run_agent_with_fallback(
                 configs=configs,
                 system_prompt=system_prompt,

@@ -20,16 +20,18 @@ export function NewDraftModal({
   persona: PersonaKey;
   busy?: boolean;
   onCancel: () => void;
-  onConfirm: (title: string, templateCode: string) => Promise<void> | void;
+  onConfirm: (title: string, templateCode: string, brief: string) => Promise<void> | void;
 }) {
   const [title, setTitle] = useState("");
   const [templates, setTemplates] = useState<TemplateItem[]>([]);
   const [templateCode, setTemplateCode] = useState("WO_EXTENSION");
+  const [brief, setBrief] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setTitle(defaultTitle());
+    setBrief("");
     setError(null);
     void listTemplates(persona).then((res) => {
       setTemplates(res.items);
@@ -46,7 +48,7 @@ export function NewDraftModal({
     }
     setError(null);
     try {
-      await onConfirm(title.trim(), templateCode);
+      await onConfirm(title.trim(), templateCode, brief.trim());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -93,6 +95,22 @@ export function NewDraftModal({
           </select>
         </label>
 
+        <label className="mt-3 block text-xs text-zinc-400">
+          Describe what you need <span className="text-zinc-600">(optional — generates a first draft)</span>
+          <textarea
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+            rows={3}
+            placeholder='e.g. "Proposal for the Ministry of Tourism for a third-party evaluation of a sanitation scheme"'
+            className="mt-1 w-full resize-none rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:border-blue-500 focus:outline-none"
+          />
+          {brief.trim() && (
+            <span className="mt-1 block text-[11px] text-emerald-500">
+              The agent will draft each section grounded in the corpus, then open in the editor for review.
+            </span>
+          )}
+        </label>
+
         {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
 
         <div className="mt-4 flex justify-end gap-2">
@@ -110,7 +128,7 @@ export function NewDraftModal({
             disabled={busy}
             className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
           >
-            {busy ? "Creating…" : "Create"}
+            {busy ? "Creating…" : brief.trim() ? "Create & generate" : "Create"}
           </button>
         </div>
       </div>

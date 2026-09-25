@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
@@ -279,6 +280,16 @@ def _stream_mock(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]])
     if last_tool_result and last_assistant and any(tc["name"] == "cfc_search_corpus" for tc in last_assistant.tool_calls):
         for tok in ["Found ", "precedent. ", "Inserting ", "a ", "cited ", "note ", "at ", "the ", "end."]:
             yield {"kind": "text", "text": tok}
+        # draft_generator's user prompt names the section being drafted — echo it
+        # into the mock insert so a mock-provider generation run produces a
+        # visibly section-differentiated draft, not 7 identical paragraphs.
+        first_user = next((t for t in turns if t.role == "user"), None)
+        section_match = re.search(r"Section to draft now:\s*(.+?)\s*\(", (first_user.content if first_user else "") or "")
+        text = (
+            f"[CFC Mock] {section_match.group(1)} section drafted by the smoke-test agent."
+            if section_match
+            else "[CFC Mock] This paragraph was inserted by the smoke-test agent."
+        )
         yield {
             "kind": "final",
             "tool_calls": [
@@ -286,7 +297,7 @@ def _stream_mock(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]])
                     "id": "mock_insert",
                     "name": "cfc_propose_insert",
                     "args": {
-                        "text": "[CFC Mock] This paragraph was inserted by the smoke-test agent.",
+                        "text": text,
                         "position": "end",
                         "citation": "smoke-test",
                     },
