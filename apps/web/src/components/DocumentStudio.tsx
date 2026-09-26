@@ -9,6 +9,7 @@ import { CorpusUploader } from "@/components/CorpusUploader";
 import { AgentPanel } from "@/components/AgentPanel";
 import { DecisionModal, type DecisionKind } from "@/components/DecisionModal";
 import { NewDraftModal, type TemplateChoice } from "@/components/NewDraftModal";
+import { StudioSidebarTabs } from "@/components/StudioSidebarTabs";
 import {
   PERSONAS,
   type PersonaKey,
@@ -606,59 +607,9 @@ export function DocumentStudio({
         </section>
 
         <aside className="space-y-3 overflow-auto rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm">
-          <div className="flex gap-2">
-            <input
-              value={openIdInput}
-              onChange={(e) => setOpenIdInput(e.target.value)}
-              placeholder="draft id"
-              className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-xs"
-            />
-            <button
-              type="button"
-              disabled={busy || !openIdInput.trim()}
-              onClick={() => void onOpenId()}
-              className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800 disabled:opacity-50"
-            >
-              Open
-            </button>
-          </div>
-
-          <div>
-            <div className="text-xs uppercase tracking-wide text-zinc-500">Workflow</div>
-            <dl className="mt-2 space-y-1 text-zinc-300">
-              <div className="flex justify-between gap-2">
-                <dt>Draft</dt>
-                <dd className="font-mono text-xs">{draftId ?? "—"}</dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt>Title</dt>
-                <dd className="truncate text-xs">{draftMeta?.title ?? "—"}</dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt>Status</dt>
-                <dd>{session?.status ?? "—"}</dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt>Version</dt>
-                <dd>{session?.version ?? "—"}</dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt>Mode</dt>
-                <dd>
-                  {session?.document_mode ?? "—"} / {session?.superdoc_role ?? "—"}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt>Dirty</dt>
-                <dd>{dirty ? "unsaved" : "clean"}</dd>
-              </div>
-              <div className="flex justify-between gap-2">
-                <dt>Editor</dt>
-                <dd>{ready ? "ready" : file ? "loading" : "idle"}</dd>
-              </div>
-            </dl>
-          </div>
-
+          {/* Status/error reflect document-level actions (Save, Submit,
+           * decisions) — kept always visible regardless of which tab is
+           * active, rather than buried inside one panel. */}
           <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2 text-xs text-zinc-400">
             {statusMsg}
           </div>
@@ -668,94 +619,157 @@ export function DocumentStudio({
             </div>
           )}
 
-          <div>
-            <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500">
-              <span>Versions</span>
-              {draftId && versions && versions.length >= 2 && (
-                <a
-                  href={`/studio/diff?draft=${encodeURIComponent(draftId)}&from=${
-                    versions[versions.length - 2].version
-                  }&to=${versions[versions.length - 1].version}&persona=${persona}`}
-                  className="text-[10px] normal-case tracking-normal text-blue-400 hover:underline"
-                >
-                  diff last 2
-                </a>
-              )}
-            </div>
-            <ul className="max-h-28 space-y-1 overflow-auto text-[11px] text-zinc-400">
-              {(versions || []).length === 0 && <li>No versions yet</li>}
-              {[...(versions || [])].reverse().map((v, i, arr) => {
-                const prev = arr[i + 1];
-                return (
-                  <li key={v.version} className="flex items-center gap-1 font-mono">
-                    <span>
-                      v{v.version} · {v.trigger} · {v.created_at?.slice(0, 19)}
-                    </span>
-                    {prev && draftId && (
-                      <a
-                        href={`/studio/diff?draft=${encodeURIComponent(draftId)}&from=${prev.version}&to=${v.version}&persona=${persona}`}
-                        className="ml-auto text-[9px] text-blue-400 hover:underline"
-                        title={`diff v${prev.version} → v${v.version}`}
-                      >
-                        diff
-                      </a>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-
-          <div>
-            <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">Recent drafts</div>
-            <ul className="max-h-40 space-y-1 overflow-auto text-[11px]">
-              {recent.length === 0 && (
-                <li className="text-zinc-500">None yet — create a draft</li>
-              )}
-              {recent.map((item) => (
-                <li key={item.draft.id}>
+          <StudioSidebarTabs
+            draft={
+              <div className="space-y-3">
+                <div className="flex gap-2">
+                  <input
+                    value={openIdInput}
+                    onChange={(e) => setOpenIdInput(e.target.value)}
+                    placeholder="draft id"
+                    className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-xs"
+                  />
                   <button
                     type="button"
-                    className="w-full rounded px-1 py-0.5 text-left hover:bg-zinc-900"
-                    onClick={() => void loadDraft(item.draft.id, persona)}
+                    disabled={busy || !openIdInput.trim()}
+                    onClick={() => void onOpenId()}
+                    className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800 disabled:opacity-50"
                   >
-                    <span className="font-mono text-zinc-300">{item.draft.id}</span>
-                    <span className="block truncate text-zinc-500">
-                      {item.draft.status} · {item.draft.title}
-                    </span>
+                    Open
                   </button>
-                </li>
-              ))}
-            </ul>
-          </div>
+                </div>
 
-          <RagPanel persona={persona} canInsert={Boolean(session?.can_save && ready)} onInsertCitation={insertCitationIntoDraft} />
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-zinc-500">Workflow</div>
+                  <dl className="mt-2 space-y-1 text-zinc-300">
+                    <div className="flex justify-between gap-2">
+                      <dt>Draft</dt>
+                      <dd className="font-mono text-xs">{draftId ?? "—"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt>Title</dt>
+                      <dd className="truncate text-xs">{draftMeta?.title ?? "—"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt>Status</dt>
+                      <dd>{session?.status ?? "—"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt>Version</dt>
+                      <dd>{session?.version ?? "—"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt>Mode</dt>
+                      <dd>
+                        {session?.document_mode ?? "—"} / {session?.superdoc_role ?? "—"}
+                      </dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt>Dirty</dt>
+                      <dd>{dirty ? "unsaved" : "clean"}</dd>
+                    </div>
+                    <div className="flex justify-between gap-2">
+                      <dt>Editor</dt>
+                      <dd>{ready ? "ready" : file ? "loading" : "idle"}</dd>
+                    </div>
+                  </dl>
+                </div>
 
-          <AgentPanel
-            draftId={draftId}
-            persona={persona}
-            superdocRole={session?.superdoc_role}
-            canRunAgent={Boolean(session?.can_run_agent_mutate)}
-            onDraftUpdated={async () => {
-              if (!draftId) return;
-              await loadDraft(draftId, persona);
-              setThreadsRefreshKey((k) => k + 1);
-            }}
-            onThreadsChanged={() => setThreadsRefreshKey((k) => k + 1)}
-            autoRun={pendingGeneration}
-            onAutoRunConsumed={() => setPendingGeneration(null)}
-          />
+                <div>
+                  <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500">
+                    <span>Versions</span>
+                    {draftId && versions && versions.length >= 2 && (
+                      <a
+                        href={`/studio/diff?draft=${encodeURIComponent(draftId)}&from=${
+                          versions[versions.length - 2].version
+                        }&to=${versions[versions.length - 1].version}&persona=${persona}`}
+                        className="text-[10px] normal-case tracking-normal text-blue-400 hover:underline"
+                      >
+                        diff last 2
+                      </a>
+                    )}
+                  </div>
+                  <ul className="max-h-28 space-y-1 overflow-auto text-[11px] text-zinc-400">
+                    {(versions || []).length === 0 && <li>No versions yet</li>}
+                    {[...(versions || [])].reverse().map((v, i, arr) => {
+                      const prev = arr[i + 1];
+                      return (
+                        <li key={v.version} className="flex items-center gap-1 font-mono">
+                          <span>
+                            v{v.version} · {v.trigger} · {v.created_at?.slice(0, 19)}
+                          </span>
+                          {prev && draftId && (
+                            <a
+                              href={`/studio/diff?draft=${encodeURIComponent(draftId)}&from=${prev.version}&to=${v.version}&persona=${persona}`}
+                              className="ml-auto text-[9px] text-blue-400 hover:underline"
+                              title={`diff v${prev.version} → v${v.version}`}
+                            >
+                              diff
+                            </a>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
 
-          <CorpusUploader
-            persona={persona}
-            isAdmin={session?.user.cfc_role === "admin" || persona === "admin"}
-          />
-
-          <ThreadsPanel
-            draftId={draftId}
-            persona={persona}
-            canComment={Boolean(session && session.superdoc_role !== "viewer")}
-            refreshKey={threadsRefreshKey}
+                <div>
+                  <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">Recent drafts</div>
+                  <ul className="max-h-40 space-y-1 overflow-auto text-[11px]">
+                    {recent.length === 0 && (
+                      <li className="text-zinc-500">None yet — create a draft</li>
+                    )}
+                    {recent.map((item) => (
+                      <li key={item.draft.id}>
+                        <button
+                          type="button"
+                          className="w-full rounded px-1 py-0.5 text-left hover:bg-zinc-900"
+                          onClick={() => void loadDraft(item.draft.id, persona)}
+                        >
+                          <span className="font-mono text-zinc-300">{item.draft.id}</span>
+                          <span className="block truncate text-zinc-500">
+                            {item.draft.status} · {item.draft.title}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            }
+            generate={
+              <AgentPanel
+                draftId={draftId}
+                persona={persona}
+                superdocRole={session?.superdoc_role}
+                canRunAgent={Boolean(session?.can_run_agent_mutate)}
+                onDraftUpdated={async () => {
+                  if (!draftId) return;
+                  await loadDraft(draftId, persona);
+                  setThreadsRefreshKey((k) => k + 1);
+                }}
+                onThreadsChanged={() => setThreadsRefreshKey((k) => k + 1)}
+                autoRun={pendingGeneration}
+                onAutoRunConsumed={() => setPendingGeneration(null)}
+              />
+            }
+            research={
+              <RagPanel persona={persona} canInsert={Boolean(session?.can_save && ready)} onInsertCitation={insertCitationIntoDraft} />
+            }
+            corpus={
+              <CorpusUploader
+                persona={persona}
+                isAdmin={session?.user.cfc_role === "admin" || persona === "admin"}
+              />
+            }
+            comments={
+              <ThreadsPanel
+                draftId={draftId}
+                persona={persona}
+                canComment={Boolean(session && session.superdoc_role !== "viewer")}
+                refreshKey={threadsRefreshKey}
+              />
+            }
           />
 
           <div className="text-[11px] text-zinc-500">
