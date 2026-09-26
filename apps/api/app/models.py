@@ -211,6 +211,10 @@ class CorpusDocument(Base):
     )
     visibility: Mapped[str] = mapped_column(String(32), default="division_only", nullable=False)
     full_text: Mapped[Optional[str]] = mapped_column(Text)
+    # successful|unsuccessful|pending|unknown — schema-only for now (all
+    # current docs backfilled to "successful"); real outcome tagging data
+    # (CSV/folder convention) is a fast-follow once delivered.
+    outcome: Mapped[Optional[str]] = mapped_column(String(16))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
@@ -261,3 +265,48 @@ class AuditLog(Base):
         String(32), ForeignKey("divisions.code", ondelete="SET NULL")
     )
     details: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+
+
+class IngestionJob(Base):
+    """One file discovered for ingestion — survives a redeploy mid-run.
+
+    `content_sha256` here hashes the raw file bytes (cheap, no extraction),
+    unlike CorpusDocument.content_sha256 which hashes extracted text — this
+    lets the discovery walk stay a cheap stat+hash pass, re-enqueuing a job
+    only when the source file itself actually changed.
+    """
+
+    __tablename__ = "ingestion_jobs"
+    __table_args__ = (Index("ix_ingestion_jobs_status", "status", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_path: Mapped[str] = mapped_column(String(500), unique=True, nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    division_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    last_error: Mapped[Optional[str]] = mapped_column(Text)
+    content_sha256: Mapped[Optional[str]] = mapped_column(String(64))
+    runpulse_pages_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    claimed_by: Mapped[Optional[str]] = mapped_column(String(64))
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
+class IngestionQuota(Base):
+    """Single-row (id=1) cumulative RunPulse OCR usage tracker."""
+
+    __tablename__ = "ingestion_quota"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    runpulse_pages_used_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    runpulse_page_cap: Mapped[int] = mapped_column(Integer, default=10_000, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )

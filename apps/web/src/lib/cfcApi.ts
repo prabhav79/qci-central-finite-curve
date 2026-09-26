@@ -481,12 +481,21 @@ export async function uploadCorpusTemplate(
   return res.json() as Promise<{ ok: boolean; template_code: string; path: string }>;
 }
 
-export async function reindexCorpus(persona: PersonaKey) {
-  return apiJson<{ stats: Record<string, number>; errors: string[] }>(
-    "/corpus/reindex",
+export async function reindexCorpus(persona: PersonaKey, force = false) {
+  return apiJson<{ accepted: boolean; reason?: string; poll: string }>(
+    `/corpus/reindex${force ? "?force=true" : ""}`,
     persona,
     { method: "POST", body: "{}" },
   );
+}
+
+export async function getReindexStatus(persona: PersonaKey) {
+  return apiJson<{
+    jobs: Record<string, number>;
+    total: number;
+    runpulse_pages_used_total: number;
+    runpulse_page_cap: number | null;
+  }>("/corpus/reindex/status", persona, { method: "GET" });
 }
 
 export type AgentFrame =

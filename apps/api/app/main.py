@@ -157,6 +157,15 @@ def _startup() -> None:
         log.info("cfc seed: %s", counts)
     except Exception:  # noqa: BLE001
         log.exception("cfc seed failed")
+    try:
+        from .ingest import reset_stale_jobs  # noqa: PLC0415
+
+        with SessionLocal() as s:
+            n = reset_stale_jobs(s)
+        if n:
+            log.info("cfc ingest: recovered %d stale ingestion job(s) stuck 'running'", n)
+    except Exception:  # noqa: BLE001
+        log.exception("cfc ingest stale-job recovery failed")
 
 
 def _bucket() -> Bucket:
@@ -1993,29 +2002,30 @@ def agent_chat(
     )
 
 
-# Reindex progress tracked in-process. Cleared on restart.
-_reindex_state: dict[str, Any] = {"status": "idle", "started_at": None, "finished_at": None, "result": None, "error": None}
-
-
 def _run_reindex_background(user_id: str, division: str, force: bool) -> None:
     """Runs inside a FastAPI BackgroundTask AFTER the response is sent.
 
-    Own session; own error handling; writes progress into module-level state
-    that /corpus/reindex/status reads.
+    Enqueues discovered/changed files into ingestion_jobs, then drains the
+    queue with a worker pool. Progress lives in ingestion_jobs/ingestion_quota
+    (DB-backed), not an in-process dict — so /corpus/reindex/status stays
+    accurate even if the API redeploys mid-run; reset_stale_jobs() on startup
+    recovers anything left 'running' by a process that died mid-job.
     """
     from sqlalchemy import delete as _delete  # noqa: PLC0415
 
-    from .ingest import ingest_all  # noqa: PLC0415
-    from .models import CorpusChunk as _Chunk, CorpusDocument as _Doc  # noqa: PLC0415
+    from .ingest import enqueue_jobs, run_worker_pool  # noqa: PLC0415
+    from .models import CorpusChunk as _Chunk, CorpusDocument as _Doc, IngestionJob as _Job  # noqa: PLC0415
 
-    _reindex_state.update({"status": "running", "started_at": _iso(_utc_now()), "finished_at": None, "result": None, "error": None})
     try:
         if force:
             with SessionLocal() as s:
                 s.execute(_delete(_Chunk))
                 s.execute(_delete(_Doc))
+                s.execute(_delete(_Job))
                 s.commit()
-        res = ingest_all(division_code=division or "PPID")
+        with SessionLocal() as s:
+            enq = enqueue_jobs(s, division_code=division or "PPID")
+        processed = run_worker_pool()
         with SessionLocal() as s:
             u = s.get(User, user_id)
             s.add(
@@ -2025,14 +2035,12 @@ def _run_reindex_background(user_id: str, division: str, force: bool) -> None:
                     target_kind="corpus",
                     target_id="all",
                     division_code=(u.division_code if u else division),
-                    details={"force": force, **(res.get("stats") or {})},
+                    details={"force": force, "enqueued": enq, "processed": processed},
                 )
             )
             s.commit()
-        _reindex_state.update({"status": "done", "finished_at": _iso(_utc_now()), "result": res})
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         log.exception("background reindex failed")
-        _reindex_state.update({"status": "error", "finished_at": _iso(_utc_now()), "error": f"{type(e).__name__}: {e}"})
 
 
 @app.post("/corpus/reindex")
@@ -2045,31 +2053,46 @@ def corpus_reindex(
     cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Admin: rebuild the corpus index. Runs in the background so the HTTP
-    connection isn't killed by Railway's 5-minute edge timeout.
+    """Admin: enqueue any new/changed corpus files and drain the ingestion
+    queue in the background so the HTTP connection isn't killed by Railway's
+    5-minute edge timeout.
 
-    `?force=true` truncates corpus_documents + corpus_chunks first (needed
-    after a schema migration that invalidated old chunk data).
+    `?force=true` truncates corpus_documents + corpus_chunks + ingestion_jobs
+    first (needed after a schema migration that invalidated old chunk data).
 
     Poll `GET /corpus/reindex/status` for progress.
     """
+    from .models import IngestionJob as _Job  # noqa: PLC0415
+
     user = _resolve_user(s, x_cfc_user, cfc_session)
     if not user.is_admin:
         raise HTTPException(status_code=403, detail="Admin only")
-    if _reindex_state.get("status") == "running":
-        return {"accepted": False, "reason": "already running", "state": _reindex_state}
+    already_running = s.execute(
+        select(_Job).where(_Job.status == "running").limit(1)
+    ).scalar_one_or_none()
+    if already_running is not None and not force:
+        return {"accepted": False, "reason": "already running", "poll": "/corpus/reindex/status"}
     background_tasks.add_task(
         _run_reindex_background,
         user.employee_id,
         user.division_code or "PPID",
         force,
     )
-    return {"accepted": True, "state": _reindex_state, "poll": "/corpus/reindex/status"}
+    return {"accepted": True, "poll": "/corpus/reindex/status"}
 
 
 @app.get("/corpus/reindex/status")
-def corpus_reindex_status() -> dict[str, Any]:
-    return _reindex_state
+def corpus_reindex_status(s: Session = Depends(get_session)) -> dict[str, Any]:
+    from .models import IngestionJob as _Job, IngestionQuota as _Quota  # noqa: PLC0415
+
+    counts: dict[str, int] = {row[0]: row[1] for row in s.execute(select(_Job.status, func.count()).group_by(_Job.status)).all()}
+    quota = s.get(_Quota, 1)
+    return {
+        "jobs": counts,
+        "total": sum(counts.values()),
+        "runpulse_pages_used_total": quota.runpulse_pages_used_total if quota else 0,
+        "runpulse_page_cap": quota.runpulse_page_cap if quota else None,
+    }
 
 
 @app.get("/integrations/health")

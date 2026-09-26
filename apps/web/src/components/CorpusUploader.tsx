@@ -6,6 +6,7 @@ import {
   uploadCorpusFile,
   uploadCorpusTemplate,
   reindexCorpus,
+  getReindexStatus,
 } from "@/lib/cfcApi";
 
 type Mode = "wo" | "template";
@@ -66,14 +67,30 @@ export function CorpusUploader({
   async function onReindex() {
     setBusy(true);
     setError(null);
-    setStatus("Reindexing corpus…");
+    setStatus("Enqueuing changed files…");
     try {
       const r = await reindexCorpus(persona);
-      const parts = Object.entries(r.stats)
-        .filter(([_, n]) => n)
-        .map(([k, n]) => `${k}=${n}`);
-      setStatus(`Reindex done: ${parts.join(", ") || "no changes"}`);
-      onIngested?.();
+      if (!r.accepted) {
+        setStatus(`Reindex not started: ${r.reason ?? "unknown reason"}`);
+        return;
+      }
+      // Job queue runs in the background (survives a Railway redeploy) —
+      // poll for completion instead of expecting a synchronous result.
+      for (let i = 0; i < 150; i++) {
+        await new Promise((r2) => setTimeout(r2, 2000));
+        const st = await getReindexStatus(persona);
+        const { pending = 0, running = 0, done = 0, error: errCount = 0 } = st.jobs;
+        setStatus(`Reindexing… done=${done} pending=${pending} running=${running}${errCount ? ` error=${errCount}` : ""}`);
+        if (pending === 0 && running === 0) {
+          setStatus(
+            `Reindex done: ${done} indexed${errCount ? `, ${errCount} failed` : ""} · ` +
+              `RunPulse pages used ${st.runpulse_pages_used_total}${st.runpulse_page_cap ? `/${st.runpulse_page_cap}` : ""}`,
+          );
+          onIngested?.();
+          return;
+        }
+      }
+      setStatus("Reindex still running in the background — check back later.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

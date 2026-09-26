@@ -25,6 +25,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -35,7 +36,7 @@ from sqlalchemy.orm import Session
 from .chunking import chunk_text
 from .db import IS_POSTGRES, ROOT, SessionLocal
 from .embeddings import embed_batch, to_storage
-from .models import CorpusChunk, CorpusDocument
+from .models import CorpusChunk, CorpusDocument, IngestionJob, IngestionQuota
 
 log = logging.getLogger("cfc.ingest")
 
@@ -78,6 +79,7 @@ class ExtractedDoc:
     value_inr: float
     source_path: str
     kind: str  # processed_json | work_order_docx | work_order_pdf | upload_docx | upload_pdf
+    runpulse_pages: int = 0  # >0 only when this extraction used RunPulse OCR
 
 
 # --------------------------------------------------------------------------- #
@@ -158,12 +160,21 @@ def _extract_pdf(path: Path, max_pages: int = 60) -> str:
         return ""
 
 
-def _extract_pdf_with_ocr_fallback(path: Path) -> tuple[str, bool]:
-    """Return (text, used_ocr_fallback). If text layer is empty and RunPulse
-    is configured, call it; otherwise return a placeholder."""
+def _pdf_page_count(path: Path) -> int:
+    try:
+        from pypdf import PdfReader  # type: ignore
+
+        return len(PdfReader(str(path)).pages)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _extract_pdf_with_ocr_fallback(path: Path) -> tuple[str, bool, int]:
+    """Return (text, used_ocr_fallback, pages_billed). If text layer is empty
+    and RunPulse is configured, call it; otherwise return a placeholder."""
     text = _extract_pdf(path)
     if text.strip():
-        return text, False
+        return text, False, 0
 
     try:
         from . import ocr_runpulse  # noqa: PLC0415  optional
@@ -172,7 +183,7 @@ def _extract_pdf_with_ocr_fallback(path: Path) -> tuple[str, bool]:
 
     if ocr_runpulse and ocr_runpulse.is_configured():
         try:
-            return ocr_runpulse.extract_text(path), True
+            return ocr_runpulse.extract_text(path), True, _pdf_page_count(path)
         except Exception as e:  # noqa: BLE001
             log.warning("RunPulse OCR failed for %s: %s — using placeholder", path, e)
 
@@ -180,7 +191,7 @@ def _extract_pdf_with_ocr_fallback(path: Path) -> tuple[str, bool]:
         f"PDF work order file: {_title_from_name(path.name)}. "
         "Text layer empty or scanned; RunPulse OCR not yet run for this file."
     )
-    return placeholder, False
+    return placeholder, False, 0
 
 
 def _extract_processed_json(path: Path) -> ExtractedDoc:
@@ -209,11 +220,12 @@ def _extract_processed_json(path: Path) -> ExtractedDoc:
 def _extract_work_order(path: Path) -> ExtractedDoc:
     ext = path.suffix.lower()
     title = _title_from_name(path.name)
+    pages = 0
     if ext == ".docx":
         text = _extract_docx(path)
         kind = "work_order_docx"
     elif ext == ".pdf":
-        text, _ocr = _extract_pdf_with_ocr_fallback(path)
+        text, _ocr, pages = _extract_pdf_with_ocr_fallback(path)
         kind = "work_order_pdf"
     else:
         text = ""
@@ -229,6 +241,7 @@ def _extract_work_order(path: Path) -> ExtractedDoc:
         value_inr=0.0,
         source_path=_rel(path),
         kind=kind,
+        runpulse_pages=pages,
     )
 
 
@@ -440,6 +453,179 @@ def ingest_all(
         session.close()
 
     return {"stats": stats, "errors": errors}
+
+
+# --------------------------------------------------------------------------- #
+# Job queue (survives a redeploy mid-run — see plan item 6)
+# --------------------------------------------------------------------------- #
+
+_STALE_RUNNING_AFTER = timedelta(minutes=30)
+
+
+def _hash_file(path: Path) -> str:
+    """Raw-bytes hash — no parsing/OCR — so the discovery walk stays cheap."""
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def enqueue_jobs(session: Session, *, division_code: str = DEFAULT_DIVISION) -> dict[str, int]:
+    """Cheap discovery walk: stat+hash each source file and upsert a pending
+    ingestion_jobs row when new or changed. Never extracts/OCRs — that's the
+    worker's job. Safe to call repeatedly (e.g. on every /corpus/reindex);
+    an unchanged, already-claimed, or already-done file is left alone so
+    re-enqueuing never resets a job's attempts/status by itself."""
+    counts = {"enqueued": 0, "requeued": 0, "unchanged": 0, "skipped": 0}
+
+    def _upsert(path: Path, source_kind: str, div: str) -> None:
+        rel = _rel(path)
+        try:
+            file_hash = _hash_file(path)
+        except OSError as e:
+            log.warning("enqueue: cannot read %s: %s", path, e)
+            counts["skipped"] += 1
+            return
+        existing = session.execute(
+            select(IngestionJob).where(IngestionJob.source_path == rel)
+        ).scalar_one_or_none()
+        if existing is None:
+            session.add(
+                IngestionJob(
+                    source_path=rel,
+                    source_kind=source_kind,
+                    division_code=div,
+                    status="pending",
+                    content_sha256=file_hash,
+                )
+            )
+            counts["enqueued"] += 1
+        elif existing.content_sha256 != file_hash:
+            existing.content_sha256 = file_hash
+            existing.status = "pending"
+            existing.attempts = 0
+            existing.last_error = None
+            existing.division_code = div
+            existing.source_kind = source_kind
+            counts["requeued"] += 1
+        else:
+            counts["unchanged"] += 1
+
+    for jp in _discover_processed():
+        _upsert(jp, "processed_json", division_code)
+    for wp in _discover_work_orders():
+        _upsert(wp, "work_order", division_code)
+    for up, div_hint in _discover_uploads():
+        _upsert(up, "upload", div_hint or division_code)
+
+    session.commit()
+    return counts
+
+
+def reset_stale_jobs(session: Session) -> int:
+    """Crash recovery: a job stuck 'running' past a staleness threshold (the
+    API got redeployed mid-job) goes back to 'pending'. Call on API startup."""
+    cutoff = datetime.now(timezone.utc) - _STALE_RUNNING_AFTER
+    stale = session.execute(
+        select(IngestionJob).where(IngestionJob.status == "running", IngestionJob.claimed_at < cutoff)
+    ).scalars().all()
+    for job in stale:
+        job.status = "pending"
+        job.claimed_by = None
+        job.claimed_at = None
+    if stale:
+        session.commit()
+    return len(stale)
+
+
+def claim_next_job(session: Session, worker_id: str) -> IngestionJob | None:
+    """Claim one pending job. Postgres uses FOR UPDATE SKIP LOCKED so
+    concurrent workers never double-claim; SQLite (single-process dev) just
+    claims directly — SKIP LOCKED isn't valid SQLite syntax."""
+    q = select(IngestionJob).where(IngestionJob.status == "pending").order_by(IngestionJob.created_at).limit(1)
+    if IS_POSTGRES:
+        q = q.with_for_update(skip_locked=True)
+    row = session.execute(q).scalar_one_or_none()
+    if row is None:
+        return None
+    now = datetime.now(timezone.utc)
+    row.status = "running"
+    row.claimed_by = worker_id
+    row.claimed_at = now
+    row.started_at = now
+    session.commit()
+    return row
+
+
+def _extracted_doc_for_job(job: IngestionJob) -> ExtractedDoc:
+    path = ROOT / job.source_path
+    if job.source_kind == "processed_json":
+        return _extract_processed_json(path)
+    if job.source_kind == "upload":
+        return _extract_upload(path, job.division_code)
+    return _extract_work_order(path)
+
+
+def process_job(session: Session, job: IngestionJob) -> None:
+    """Extract → OCR-fallback → chunk → embed → upsert for one claimed job.
+    Failure increments attempts and requeues (pending) until max_attempts,
+    then parks the job as 'error' rather than retrying forever."""
+    try:
+        ed = _extracted_doc_for_job(job)
+        ingest_one(session, ed, division_code=job.division_code)
+        if ed.runpulse_pages:
+            quota = session.get(IngestionQuota, 1)
+            if quota:
+                quota.runpulse_pages_used_total += ed.runpulse_pages
+            job.runpulse_pages_used = ed.runpulse_pages
+        job.status = "done"
+        job.last_error = None
+        job.finished_at = datetime.now(timezone.utc)
+        session.commit()
+    except Exception as e:  # noqa: BLE001
+        session.rollback()
+        job.attempts += 1
+        job.last_error = f"{type(e).__name__}: {e}"[:2000]
+        job.finished_at = datetime.now(timezone.utc)
+        job.status = "pending" if job.attempts < job.max_attempts else "error"
+        session.commit()
+
+
+def run_worker_pool(*, n_workers: int | None = None, max_jobs: int | None = None) -> dict[str, int]:
+    """Drains the ingestion_jobs queue using a small pool of threads, each
+    with its own DB session — I/O-bound work (embeddings + RunPulse HTTP
+    calls), so real threads help despite the GIL. No new infra (no
+    Redis/Celery) needed at this scale."""
+    import threading
+
+    n = n_workers or int(os.environ.get("CFC_INGEST_WORKERS", "3"))
+    totals = {"done": 0, "error": 0, "retrying": 0}
+    lock = threading.Lock()
+
+    def _worker(worker_id: str) -> None:
+        session = SessionLocal()
+        try:
+            while True:
+                with lock:
+                    if max_jobs is not None and sum(totals.values()) >= max_jobs:
+                        return
+                job = claim_next_job(session, worker_id)
+                if job is None:
+                    return
+                process_job(session, job)
+                bucket = job.status if job.status == "done" else ("error" if job.status == "error" else "retrying")
+                with lock:
+                    totals[bucket] += 1
+        finally:
+            session.close()
+
+    threads = [threading.Thread(target=_worker, args=(f"worker-{i}",), daemon=True) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return totals
 
 
 def _cli() -> None:
