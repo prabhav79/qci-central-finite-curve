@@ -42,12 +42,18 @@ from .agent_presets import (
     TEMPLATE_CATALOG,
     draft_generator_system,
     draft_generator_user,
-    precedent_weaver_system,
-    precedent_weaver_user,
+    draft_intake_system,
+    draft_intake_user,
     redline_extender_system,
     redline_extender_user,
 )
-from .agent_tools import TOOL_SCHEMAS, AgentContext, dispatch as agent_dispatch
+from .agent_tools import (
+    INTAKE_TOOL_SCHEMAS,
+    REVIEWER_TOOL_SCHEMAS,
+    TOOL_SCHEMAS,
+    AgentContext,
+    dispatch as agent_dispatch,
+)
 from .corpus import corpus_stats as inmem_stats, get_document as inmem_get, list_documents as inmem_list, reload_corpus, search_corpus as inmem_search
 from .corpus_db import db_document_outline, db_get_document, db_has_corpus, db_list_documents, db_search, db_stats
 from .db import ROOT, SessionLocal, ensure_pgvector, get_session
@@ -1714,10 +1720,21 @@ async def corpus_template_upload(
 DEFAULT_AGENT_SYSTEM = (
     "You are CFC, an assistant embedded inside a SuperDoc DOCX editor at "
     "Quality Council of India. You can search the institutional corpus, "
-    "read the current draft, and propose insertions or replacements. Never "
-    "invent citations — cite the doc_id returned by cfc_search_corpus. Keep "
-    "insertions focused and short. When the user's session is a suggester "
-    "(approver review), your mutations are automatically tracked."
+    "read the current draft, and propose insertions or replacements. "
+    "Before you write anything, search the corpus for relevant prior QCI "
+    "work — lean on real precedent rather than writing from scratch. "
+    "ADAPT, DON'T COPY: a retrieved precedent belongs to a different "
+    "client/engagement than the current draft — replace its counterparty "
+    "name, ministry/department, dates, and other client-specific "
+    "identifiers with the current draft's actual client/context before "
+    "inserting; never leave a prior client's institutional identity in "
+    "the output. Never invent citations, numbers, or dates — cite the "
+    "doc_id returned by cfc_search_corpus, and state a specific fact only "
+    "if it actually appeared in a tool result this conversation; if "
+    "you're unsure whether something is real or recalled general "
+    "knowledge, omit it. Keep insertions focused and short. When the "
+    "user's session is a suggester (approver review), your mutations are "
+    "automatically tracked."
 )
 
 
@@ -1800,6 +1817,13 @@ def agent_chat(
             configs = _resolve_agent_configs(body.provider or "mock", body.api_key, body.model)
             preset = (body.preset or "").lower().strip()
             preset_args = body.preset_args or {}
+            # Reviewer sessions are ALWAYS forced into the tool-restricted redline
+            # path, regardless of what preset the client requested — this used to
+            # be a client-selectable preset (redline_extender) with no server-side
+            # enforcement, which meant an L1/L2 session could reach cfc_propose_
+            # insert/replace simply by not selecting it. See agent_tools.py's
+            # dispatch() for the matching defense-in-depth check.
+            is_reviewer = session_flags.get("superdoc_role") == "suggester"
 
             ctx = AgentContext(session=s, user=user, draft=draft, session_flags=session_flags)
 
@@ -1832,6 +1856,26 @@ def agent_chat(
                 "can_run_agent_mutate": session_flags.get("can_run_agent_mutate"),
             }
 
+            if is_reviewer:
+                # Forced regardless of `preset` — see the comment above. Tool
+                # schema is REVIEWER_TOOL_SCHEMAS (no insert/replace at all),
+                # not just a prompt instruction.
+                yield _sse({"type": "preset", "name": "redline_extender"})
+                yield _sse(start_frame)
+                for frame in run_agent_with_fallback(
+                    configs=configs,
+                    system_prompt=redline_extender_system(),
+                    user_prompt=redline_extender_user(
+                        task=body.prompt,
+                        focus_areas=str(preset_args.get("focus_areas", "")),
+                        hints=str(preset_args.get("hints", "")),
+                    ),
+                    tool_schemas=REVIEWER_TOOL_SCHEMAS,
+                    tool_dispatch=dispatch,
+                ):
+                    yield _sse(frame)
+                return
+
             if preset in {"draft_generator", "draft-generator"}:
                 # A full document needs more tool-call rounds than one bounded
                 # run_agent conversation allows (agent_llm.MAX_STEPS) — each
@@ -1848,6 +1892,16 @@ def agent_chat(
                 # — GENERATION_SECTIONS is only a fallback for older drafts/codes
                 # with no stored outline.
                 outline = [(row[0], row[1]) for row in (draft.generation_outline or GENERATION_SECTIONS)]
+                # Deliberately-chosen precedent from draft_intake (if the user went
+                # through clarification) — re-resolved fresh each run rather than
+                # trusting stored titles, in case ACL/visibility changed since intake.
+                key_docs: list[dict[str, str]] | None = None
+                if draft.key_doc_ids:
+                    key_docs = []
+                    for doc_id in draft.key_doc_ids:
+                        doc = db_get_document(s, doc_id, user=user)
+                        if doc:
+                            key_docs.append({"doc_id": doc_id, "title": doc.get("title", doc_id)})
                 generated: list[str] = []
                 failed: list[str] = []
                 for section_label, section_title in outline:
@@ -1856,7 +1910,9 @@ def agent_chat(
                     for frame in run_agent_with_fallback(
                         configs=configs,
                         system_prompt=draft_generator_system(section_title),
-                        user_prompt=draft_generator_user(body.prompt, section_label, section_title, template_code),
+                        user_prompt=draft_generator_user(
+                            body.prompt, section_label, section_title, template_code, key_docs
+                        ),
                         tool_schemas=TOOL_SCHEMAS,
                         tool_dispatch=dispatch,
                     ):
@@ -1880,31 +1936,41 @@ def agent_chat(
                 )
                 return
 
-            if preset in {"precedent_weaver", "precedent-weaver"}:
-                system_prompt = precedent_weaver_system()
-                user_prompt = precedent_weaver_user(
-                    task=body.prompt,
-                    hints=str(preset_args.get("hints", "")),
-                    focus_areas=str(preset_args.get("focus_areas", "")),
-                )
-                yield _sse({"type": "preset", "name": "precedent_weaver"})
-            elif preset in {"redline_extender", "redline-extender"}:
-                system_prompt = redline_extender_system()
-                user_prompt = redline_extender_user(
-                    task=body.prompt,
-                    focus_areas=str(preset_args.get("focus_areas", "")),
-                    hints=str(preset_args.get("hints", "")),
-                )
-                yield _sse({"type": "preset", "name": "redline_extender"})
-            else:
-                system_prompt = DEFAULT_AGENT_SYSTEM
-                user_prompt = body.prompt
+            if preset in {"draft_intake", "draft-intake"}:
+                # Clarifying-questions phase that precedes draft_generator — see
+                # agent_presets.draft_intake_system for why the first tool call
+                # must be a corpus search (questions grounded in what QCI has
+                # actually done, not generic proposal-writing boilerplate).
+                yield _sse({"type": "preset", "name": "draft_intake"})
+                yield _sse(start_frame)
+                brief = str(preset_args.get("brief") or body.prompt or "")
+                transcript = preset_args.get("transcript") or []
+                turn_count = int(preset_args.get("turn_count") or 1)
+                for frame in run_agent_with_fallback(
+                    configs=configs,
+                    system_prompt=draft_intake_system(),
+                    user_prompt=draft_intake_user(brief, transcript, turn_count),
+                    tool_schemas=INTAKE_TOOL_SCHEMAS,
+                    tool_dispatch=dispatch,
+                ):
+                    if frame["type"] == "ready_to_generate":
+                        # Persist so the (separate) draft_generator request can
+                        # read it without the frontend resending it 7 times.
+                        fresh = _load_draft(s, draft_id)
+                        fresh.key_doc_ids = [d["doc_id"] for d in (frame.get("key_docs") or [])]
+                        fresh.intake_transcript = transcript
+                        s.commit()
+                    yield _sse(frame)
+                return
 
+            # Default: merged conversational assistant (precedent-weaving folded
+            # into DEFAULT_AGENT_SYSTEM — it was never a distinct capability, just
+            # a canned instruction sequence the default prompt now always follows).
             yield _sse(start_frame)
             for frame in run_agent_with_fallback(
                 configs=configs,
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
+                system_prompt=DEFAULT_AGENT_SYSTEM,
+                user_prompt=body.prompt,
                 tool_schemas=TOOL_SCHEMAS,
                 tool_dispatch=dispatch,
             ):

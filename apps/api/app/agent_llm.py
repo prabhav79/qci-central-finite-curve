@@ -30,6 +30,9 @@ import httpx
 log = logging.getLogger("cfc.agent.llm")
 
 MUTATION_TOOLS = {"cfc_propose_insert", "cfc_propose_replace"}
+# Ends the conversation immediately on a successful call — used by draft_intake
+# to hand off to draft_generator (see agent_tools.CFC_READY_TO_GENERATE_SCHEMA).
+TERMINAL_TOOLS = {"cfc_ready_to_generate"}
 
 
 @dataclass
@@ -339,6 +342,50 @@ def _stream_mock(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]])
     last_assistant = next((t for t in reversed(turns) if t.role == "assistant"), None)
     step = sum(1 for t in turns if t.role == "assistant")
 
+    if any(t.get("name") == "cfc_ready_to_generate" for t in tools):
+        # draft_intake mock script: search once, then immediately signal
+        # readiness. Mock can't simulate a real grounded clarifying question —
+        # that needs a real provider — but this exercises the mechanical
+        # ready_to_generate -> persist -> draft_generator handoff end to end.
+        first_user = next((t for t in turns if t.role == "user"), None)
+        brief = (first_user.content if first_user else "") or "user prompt"
+        if step == 0:
+            for tok in ["Searching ", "corpus ", "for ", "context…"]:
+                yield {"kind": "text", "text": tok}
+            yield {
+                "kind": "final",
+                "tool_calls": [
+                    {"id": "mock_intake_search", "name": "cfc_search_corpus", "args": {"query": brief[:80], "limit": 3}}
+                ],
+                "finish_reason": "tool_calls",
+            }
+            return
+        doc_ids: list[str] = []
+        if last_tool_result:
+            try:
+                hits = json.loads(last_tool_result.content or "{}").get("hits") or []
+                doc_ids = [h["doc_id"] for h in hits[:2] if h.get("doc_id")]
+            except Exception:  # noqa: BLE001
+                doc_ids = []
+        for tok in ["Ready ", "to ", "draft."]:
+            yield {"kind": "text", "text": tok}
+        yield {
+            "kind": "final",
+            "tool_calls": [
+                {
+                    "id": "mock_ready",
+                    "name": "cfc_ready_to_generate",
+                    "args": {
+                        "enriched_brief": f"(mock enriched) {brief[:200]}",
+                        "key_doc_ids": doc_ids,
+                        "rationale": "mock smoke test",
+                    },
+                }
+            ],
+            "finish_reason": "tool_calls",
+        }
+        return
+
     if step == 0:
         first_user = next((t for t in turns if t.role == "user"), None)
         prompt = (first_user.content if first_user else "") or "user prompt"
@@ -471,6 +518,14 @@ def run_agent(
                     "sha256": result.get("sha256"),
                     "tracked": result.get("tracked"),
                 }
+            if tc["name"] in TERMINAL_TOOLS and isinstance(result, dict) and not result.get("error"):
+                yield {
+                    "type": "ready_to_generate",
+                    "enriched_brief": result.get("enriched_brief"),
+                    "key_docs": result.get("key_docs") or [],
+                    "rationale": result.get("rationale"),
+                }
+                return
             turns.append(
                 Turn(
                     role="tool",
@@ -507,7 +562,7 @@ def run_agent_with_fallback(
             if produced_something:
                 yield frame
                 continue
-            if frame["type"] in ("token", "tool_call", "tool_result", "draft_updated", "done"):
+            if frame["type"] in ("token", "tool_call", "tool_result", "draft_updated", "ready_to_generate", "done"):
                 produced_something = True
                 if idx > 0:
                     yield {

@@ -101,6 +101,16 @@ class Draft(Base):
     # "use the default GENERATION_SECTIONS" (older drafts, or a custom
     # admin-uploaded template with no catalog entry).
     generation_outline: Mapped[Optional[list[list[str]]]] = mapped_column(JSON)
+    # Deliberately-chosen precedent doc_ids from a draft_intake clarifying
+    # conversation (validated server-side, never trusted as-is from the model
+    # — see agent_tools.cfc_ready_to_generate). Threaded into every section's
+    # draft_generator prompt as "primary reference documents." Null means no
+    # intake happened (the one-shot "Create & generate" path with no Q&A).
+    key_doc_ids: Mapped[Optional[list[str]]] = mapped_column(JSON)
+    # Compact Q&A transcript from that same intake conversation (role/text
+    # pairs only, not full tool-call traces) — kept for audit/debugging of
+    # "why these documents," not read back into any prompt after generation.
+    intake_transcript: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False

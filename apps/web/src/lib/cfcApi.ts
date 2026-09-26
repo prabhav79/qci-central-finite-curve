@@ -498,6 +498,12 @@ export type AgentFrame =
   | { type: "draft_updated"; version: number; sha256: string; tracked: boolean }
   | { type: "section_start"; section: string; title: string }
   | { type: "section_result"; section: string; ok: boolean; error?: string | null }
+  | {
+      type: "ready_to_generate";
+      enriched_brief?: string;
+      key_docs?: { doc_id: string; title: string }[];
+      rationale?: string;
+    }
   | { type: "done"; reason: string; sections_generated?: string[]; sections_failed?: string[] }
   | { type: "error"; message: string };
 

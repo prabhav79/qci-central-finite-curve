@@ -156,6 +156,55 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
 ]
 
+# Terminal tool for the draft_intake preset only — NOT part of TOOL_SCHEMAS, so
+# no other preset's model can see or call it. Ends the clarifying conversation
+# and hands off a deliberately-chosen precedent set to draft_generator.
+CFC_READY_TO_GENERATE_SCHEMA: dict[str, Any] = {
+    "name": "cfc_ready_to_generate",
+    "description": (
+        "Call this ONCE you have enough context to start drafting — do not call any other "
+        "tool after this. Ends the clarifying conversation and hands off to the "
+        "section-by-section draft generator. key_doc_ids must be doc_ids you actually saw "
+        "in a cfc_search_corpus or cfc_get_document result earlier this conversation — "
+        "never invent one; a fabricated id will simply be dropped server-side."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "enriched_brief": {
+                "type": "string",
+                "description": "The original brief, rewritten to include everything learned from the user's answers.",
+            },
+            "key_doc_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "2-5 doc_ids identified as the best precedent for this document.",
+            },
+            "rationale": {
+                "type": "string",
+                "description": "One sentence on why these documents were chosen.",
+            },
+        },
+        "required": ["enriched_brief", "key_doc_ids"],
+    },
+}
+
+# Tool subsets for the two non-default agent surfaces (see 2c: role-based tool
+# filtering is enforced here — a preset name alone is never trusted).
+INTAKE_TOOL_SCHEMAS: list[dict[str, Any]] = [
+    schema for schema in TOOL_SCHEMAS if schema["name"] in {"cfc_search_corpus", "cfc_get_document"}
+] + [CFC_READY_TO_GENERATE_SCHEMA]
+
+REVIEWER_TOOL_SCHEMAS: list[dict[str, Any]] = [
+    schema
+    for schema in TOOL_SCHEMAS
+    if schema["name"] in {"cfc_search_corpus", "cfc_get_document", "cfc_read_current_draft", "cfc_propose_redline"}
+]
+
+# Never sent to a reviewer session, regardless of what schema list a caller
+# tries to request — checked again inside dispatch() as defense in depth.
+_MUTATING_TOOLS = {"cfc_propose_insert", "cfc_propose_replace"}
+
 
 # --------------------------------------------------------------------------- #
 # Tool implementations
@@ -440,6 +489,34 @@ def cfc_propose_replace(ctx: AgentContext, find: str, replace: str) -> dict[str,
     return {"ok": True, **result}
 
 
+def cfc_ready_to_generate(
+    ctx: AgentContext,
+    enriched_brief: str,
+    key_doc_ids: list[str] | None = None,
+    rationale: str = "",
+) -> dict[str, Any]:
+    """Terminal tool for draft_intake. Never trust an LLM-supplied doc_id at
+    face value — the same failure class that produced a fact-mismatched
+    citation earlier can just as easily hand back a fabricated id here, so
+    every id is re-resolved through the real ACL-checked lookup and anything
+    that doesn't resolve is silently dropped rather than passed downstream."""
+    validated: list[dict[str, str]] = []
+    dropped: list[str] = []
+    for doc_id in key_doc_ids or []:
+        doc = db_get_document(ctx.session, doc_id, user=ctx.user)
+        if doc:
+            validated.append({"doc_id": doc_id, "title": doc.get("title", doc_id)})
+        else:
+            dropped.append(doc_id)
+    return {
+        "ok": True,
+        "enriched_brief": (enriched_brief or "").strip(),
+        "key_docs": validated,
+        "rationale": rationale,
+        "dropped_doc_ids": dropped,
+    }
+
+
 # ------- dispatcher -------
 
 _DISPATCH = {
@@ -449,6 +526,7 @@ _DISPATCH = {
     "cfc_propose_insert": cfc_propose_insert,
     "cfc_propose_replace": cfc_propose_replace,
     "cfc_propose_redline": cfc_propose_redline,
+    "cfc_ready_to_generate": cfc_ready_to_generate,
 }
 
 
@@ -475,7 +553,15 @@ def dispatch(ctx: AgentContext, name: str, args: dict[str, Any]) -> dict[str, An
 
     Extra kwargs from the model are dropped with a warning so a mildly wrong
     tool call doesn't blow up the run.
+
+    Defense in depth: reviewer (suggester) sessions must never be able to
+    directly mutate the DOCX, regardless of which tool schema list a caller
+    requested — this used to be enforced only by prompt text (never actually
+    checked server-side), so it's re-checked here even though main.py should
+    already be filtering the schema before the model ever sees these tools.
     """
+    if name in _MUTATING_TOOLS and ctx.session_flags.get("superdoc_role") == "suggester":
+        return {"error": f"{name} is not permitted for reviewer sessions — use cfc_propose_redline instead"}
     fn = _DISPATCH.get(name)
     if not fn:
         return {"error": f"unknown tool: {name}", "hint": f"available: {sorted(_DISPATCH)}"}

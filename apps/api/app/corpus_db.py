@@ -14,6 +14,7 @@ only chunks whose division_code == user.division_code.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -180,6 +181,35 @@ def _keyword_boost(text: str, q_tokens: set[str], q_lower: str) -> float:
     return score
 
 
+_DATE_FORMATS = ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%Y/%m/%d", "%d %B %Y", "%B %d, %Y", "%Y")
+
+
+def _recency_boost(date_str: str | None) -> float:
+    """Small bonus favoring more recent documents among otherwise-similar hits.
+
+    CorpusDocument.date is free-text and only populated for some ingestion
+    kinds (see ingest.py) — this is a soft tie-breaker, not a hard sort key,
+    and degrades to 0 for anything missing/unparseable rather than erroring.
+    Capped well below the keyword/section boosts (~0.6-1.2 each) so recency
+    nudges between similarly-relevant hits without overriding real relevance.
+    """
+    if not date_str:
+        return 0.0
+    parsed = None
+    for fmt in _DATE_FORMATS:
+        try:
+            parsed = datetime.strptime(date_str.strip(), fmt).date()
+            break
+        except ValueError:
+            continue
+    if not parsed:
+        return 0.0
+    days_old = (datetime.now(timezone.utc).date() - parsed).days
+    if days_old < 0:
+        return 0.0
+    return max(0.0, 0.5 - (days_old / 3650) * 0.5)  # linear decay to 0 over ~10 years
+
+
 def db_search_postgres(
     s: Session,
     query: str,
@@ -217,6 +247,7 @@ def db_search_postgres(
         boost = _keyword_boost(chunk.text, q_tokens, q_lower)
         if section_label and chunk.section_label == section_label:
             boost += 1.2
+        boost += _recency_boost(chunk.document.date)
         if domain and not any(domain.lower() in (d or "").lower() for d in (chunk.document.domains or [])):
             continue
         scored.append((base + boost, chunk))
@@ -265,6 +296,7 @@ def db_search_sqlite(
         boost = _keyword_boost(chunk.text, q_tokens, q_lower)
         if section_label and chunk.section_label == section_label:
             boost += 1.2
+        boost += _recency_boost(chunk.document.date)
         scored.append((base + boost, chunk))
 
     scored.sort(key=lambda x: x[0], reverse=True)

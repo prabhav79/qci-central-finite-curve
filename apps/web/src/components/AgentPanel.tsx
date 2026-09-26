@@ -5,6 +5,11 @@ import { type AgentFrame, type PersonaKey, streamAgentChat } from "@/lib/cfcApi"
 
 type Provider = "mock" | "gemini" | "openai" | "anthropic";
 
+type SendResult = {
+  questionText: string;
+  ready: { enrichedBrief: string; keyDocCount: number } | null;
+};
+
 type LogEntry =
   | { kind: "start"; text: string }
   | { kind: "preset"; text: string }
@@ -53,9 +58,13 @@ const PROVIDER_MODELS: Record<Provider, string> = {
   anthropic: "claude-haiku-4-5",
 };
 
+type Phase = "idle" | "intake" | "generating";
+type IntakeTurn = { role: "user" | "assistant"; text: string };
+
 export function AgentPanel({
   draftId,
   persona,
+  superdocRole,
   canRunAgent,
   onDraftUpdated,
   onThreadsChanged,
@@ -64,6 +73,11 @@ export function AgentPanel({
 }: {
   draftId: string | undefined;
   persona: PersonaKey;
+  /** Drives the two-entry-point split (see 2c): "suggester" sessions are
+   * always routed server-side into the tool-restricted redline path
+   * regardless of what's sent here — this prop only changes labeling, the
+   * server enforces the actual restriction. */
+  superdocRole?: string;
   canRunAgent: boolean;
   onDraftUpdated?: (version: number) => void;
   onThreadsChanged?: () => void;
@@ -73,6 +87,7 @@ export function AgentPanel({
   autoRun?: { preset: string; prompt: string } | null;
   onAutoRunConsumed?: () => void;
 }) {
+  const isReviewer = superdocRole === "suggester";
   const [provider, setProvider] = useState<Provider>("mock");
   const [apiKey, setApiKey] = useState("");
 
@@ -88,21 +103,35 @@ export function AgentPanel({
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // draft_intake state (2a) — a clarifying Q&A round that precedes
+  // draft_generator; see agent_presets.draft_intake_system for why the
+  // agent's first action must be a corpus search, not a generic question.
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [intakeBrief, setIntakeBrief] = useState("");
+  const [intakeTranscript, setIntakeTranscript] = useState<IntakeTurn[]>([]);
+  const [intakeTurn, setIntakeTurn] = useState(1);
+
   const effectiveModel = useMemo(() => model.trim() || PROVIDER_MODELS[provider] || "", [model, provider]);
   const needsKey = provider !== "mock";
   const canSend = !!draftId && !!prompt.trim() && !streaming && (!needsKey || !!apiKey.trim());
 
   const send = useCallback(
-    async (preset?: string, promptOverride?: string) => {
-      if (!draftId) return;
+    async (
+      preset?: string,
+      promptOverride?: string,
+      presetArgs?: Record<string, unknown>,
+    ): Promise<SendResult | null> => {
+      if (!draftId) return null;
       const effectivePrompt = (promptOverride ?? prompt).trim();
-      if (!effectivePrompt) return;
+      if (!effectivePrompt) return null;
       setStreaming(true);
       setOutput("");
       setLog([]);
       setError(null);
       const ac = new AbortController();
       abortRef.current = ac;
+      let questionText = "";
+      let ready: SendResult["ready"] = null;
       try {
         await streamAgentChat(
           draftId,
@@ -113,6 +142,7 @@ export function AgentPanel({
             api_key: needsKey ? apiKey.trim() : undefined,
             model: effectiveModel || undefined,
             preset,
+            preset_args: presetArgs,
           },
           (frame: AgentFrame) => {
             switch (frame.type) {
@@ -132,6 +162,7 @@ export function AgentPanel({
                 break;
               case "token":
                 setOutput((s) => s + frame.text);
+                questionText += frame.text;
                 break;
               case "tool_call":
                 setLog((L) => [
@@ -183,6 +214,15 @@ export function AgentPanel({
                   },
                 ]);
                 break;
+              case "ready_to_generate": {
+                const count = frame.key_docs?.length ?? 0;
+                ready = { enrichedBrief: frame.enriched_brief ?? "", keyDocCount: count };
+                setLog((L) => [
+                  ...L,
+                  { kind: "section", text: `Ready to draft — grounded in ${count} reference document${count === 1 ? "" : "s"}.` },
+                ]);
+                break;
+              }
               case "done": {
                 const gen = frame.sections_generated;
                 const failed = frame.sections_failed;
@@ -209,15 +249,65 @@ export function AgentPanel({
         setStreaming(false);
         abortRef.current = null;
       }
+      return { questionText, ready };
     },
     [apiKey, draftId, effectiveModel, needsKey, onDraftUpdated, persona, prompt, provider],
   );
 
+  // Runs one draft_intake turn: `replyText` is the user's answer to the
+  // previous question (undefined only for the very first call, which has
+  // nothing to reply to yet — just the original brief). `briefOverride` is
+  // needed for that same first call, since setIntakeBrief()'s update isn't
+  // visible in this closure until the next render.
+  const runIntakeTurn = useCallback(
+    async (replyText?: string, briefOverride?: string) => {
+      const brief = briefOverride ?? intakeBrief;
+      const newTranscript = replyText
+        ? [...intakeTranscript, { role: "user" as const, text: replyText }]
+        : intakeTranscript;
+      setIntakeTranscript(newTranscript);
+      setPrompt("");
+      const result = await send("draft_intake", brief, {
+        brief,
+        transcript: newTranscript,
+        turn_count: intakeTurn,
+      });
+      if (!result) return;
+      if (result.ready) {
+        setPhase("generating");
+        setIntakeTranscript([]);
+        await send("draft_generator", result.ready.enrichedBrief || brief);
+        setPhase("idle");
+      } else {
+        setIntakeTranscript([...newTranscript, { role: "assistant", text: result.questionText }]);
+        setIntakeTurn((t) => t + 1);
+      }
+    },
+    [intakeBrief, intakeTranscript, intakeTurn, send],
+  );
+
+  async function skipIntake() {
+    const brief = intakeBrief || prompt.trim();
+    setPhase("generating");
+    setIntakeTranscript([]);
+    setPrompt("");
+    await send("draft_generator", brief);
+    setPhase("idle");
+  }
+
   useEffect(() => {
     if (!autoRun || !draftId || streaming) return;
+    onAutoRunConsumed?.();
+    if (autoRun.preset === "draft_intake" || autoRun.preset === "draft-intake") {
+      setPhase("intake");
+      setIntakeBrief(autoRun.prompt);
+      setIntakeTranscript([]);
+      setIntakeTurn(1);
+      void runIntakeTurn(undefined, autoRun.prompt);
+      return;
+    }
     setPrompt(autoRun.prompt);
     void send(autoRun.preset, autoRun.prompt);
-    onAutoRunConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRun, draftId]);
 
@@ -229,8 +319,12 @@ export function AgentPanel({
   return (
     <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2">
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-xs uppercase tracking-wide text-zinc-500">Doc-grounded agent</div>
-        <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] text-zinc-400">Sprint 4</span>
+        <div className="text-xs uppercase tracking-wide text-zinc-500">
+          {isReviewer ? "Review" : "Ask the agent"}
+        </div>
+        <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] text-zinc-400">
+          {isReviewer ? "suggest only" : "Sprint 4"}
+        </span>
       </div>
 
       {!draftId && (
@@ -276,45 +370,60 @@ export function AgentPanel({
             />
           )}
 
+          {phase === "intake" && intakeTranscript.length > 0 && (
+            <p className="mt-1.5 text-[11px] text-amber-300">
+              {intakeTranscript[intakeTranscript.length - 1].text}
+            </p>
+          )}
+
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             rows={3}
+            disabled={phase === "generating"}
             placeholder={
-              canRunAgent
-                ? "Ask the agent to insert / modify sections using precedent (e.g. 'Add a payment milestones section based on the last CPGRAMS WO')."
-                : "Read-only for this persona/status — the agent can search but not mutate."
+              phase === "intake"
+                ? "Answer the question above, then press Send reply."
+                : isReviewer
+                  ? "Ask the agent to review this draft against precedent and leave suggestions — it never edits the document directly."
+                  : canRunAgent
+                    ? "Ask the agent to insert / modify sections using precedent, or describe a new document to generate."
+                    : "Read-only for this persona/status — the agent can search but not mutate."
             }
-            className="mt-1.5 w-full rounded border border-zinc-700 bg-zinc-950 p-1.5 text-[11px] text-zinc-100 focus:border-blue-500 focus:outline-none"
+            className="mt-1.5 w-full rounded border border-zinc-700 bg-zinc-950 p-1.5 text-[11px] text-zinc-100 focus:border-blue-500 focus:outline-none disabled:opacity-50"
           />
 
           <div className="mt-1.5 flex flex-wrap items-center gap-1">
-            <button
-              type="button"
-              disabled={!canSend}
-              onClick={() => void send()}
-              className="rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium hover:bg-indigo-500 disabled:opacity-50"
-            >
-              {streaming ? "…" : "Run agent"}
-            </button>
-            <button
-              type="button"
-              disabled={!canSend}
-              onClick={() => void send("precedent_weaver")}
-              className="rounded border border-indigo-600 px-2 py-1 text-[10px] text-indigo-200 hover:bg-indigo-900/40 disabled:opacity-50"
-              title="Preset: fetch a precedent doc and weave language into the draft"
-            >
-              Precedent Weaver
-            </button>
-            <button
-              type="button"
-              disabled={!canSend}
-              onClick={() => void send("redline_extender")}
-              className="rounded border border-fuchsia-700 px-2 py-1 text-[10px] text-fuchsia-200 hover:bg-fuchsia-900/40 disabled:opacity-50"
-              title="Preset: post tracked-change-style review threads (for L1/L2 reviewers)"
-            >
-              Redline Extender
-            </button>
+            {phase === "intake" ? (
+              <>
+                <button
+                  type="button"
+                  disabled={!draftId || !prompt.trim() || streaming}
+                  onClick={() => void runIntakeTurn(prompt.trim())}
+                  className="rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium hover:bg-indigo-500 disabled:opacity-50"
+                >
+                  {streaming ? "…" : "Send reply"}
+                </button>
+                <button
+                  type="button"
+                  disabled={streaming}
+                  onClick={() => void skipIntake()}
+                  className="rounded border border-zinc-600 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                  title="Generate now from the original brief, without answering more questions"
+                >
+                  Skip questions, generate now
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                disabled={!canSend || phase === "generating"}
+                onClick={() => void send()}
+                className="rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {streaming ? "…" : isReviewer ? "Post review" : "Run agent"}
+              </button>
+            )}
             {streaming && (
               <button
                 type="button"

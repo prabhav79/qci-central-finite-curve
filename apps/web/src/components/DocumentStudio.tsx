@@ -173,7 +173,9 @@ export function DocumentStudio({
       setNewDraftOpen(false);
       await loadDraft(res.draft.id, persona);
       if (brief.trim()) {
-        setPendingGeneration({ preset: "draft_generator", prompt: brief.trim() });
+        // draft_intake asks grounding questions first, then hands off to
+        // draft_generator itself once ready — see AgentPanel's intake phase.
+        setPendingGeneration({ preset: "draft_intake", prompt: brief.trim() });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -732,6 +734,7 @@ export function DocumentStudio({
           <AgentPanel
             draftId={draftId}
             persona={persona}
+            superdocRole={session?.superdoc_role}
             canRunAgent={Boolean(session?.can_run_agent_mutate)}
             onDraftUpdated={async () => {
               if (!draftId) return;
