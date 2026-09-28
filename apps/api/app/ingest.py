@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from . import jev_client
 from .chunking import chunk_text
 from .db import IS_POSTGRES, ROOT, SessionLocal
 from .embeddings import embed_batch, to_storage
@@ -116,6 +117,61 @@ def _guess_ministry(name: str) -> str:
     if "DOPPW" in up:
         return "DoPPW"
     return "Unknown"
+
+
+_MINISTRY_OPTIONS = {
+    "DARPG / MoPPG related": "Mentions DARPG, MoPPG, or Department of Administrative Reforms and Public Grievances",
+    "DPIIT": "Mentions DPIIT or Department for Promotion of Industry and Internal Trade",
+    "DoPPW": "Mentions DoPPW or Department of Pension and Pensioners' Welfare",
+    "Unknown": "None of the above ministries are clearly indicated",
+}
+
+
+def _jev_classify(name: str, text: str) -> tuple[list[str] | None, str | None]:
+    """Batched domain (one noul per DOMAIN_HINTS entry) + ministry (one
+    choice) classification via Jev, replacing the filename/keyword guess
+    with an actual read of the document when TYPESAFE_API_KEY is set.
+
+    Sends document text (title + first ~4000 chars) to api.typesafe.ai —
+    only runs with Aashna's explicit sign-off (2026-09-28) that this is
+    acceptable given the division/board visibility silo elsewhere in this
+    project; see the plan's item 6a for the reasoning.
+
+    Returns (None, None) — never partial — if Jev isn't configured or the
+    call fails for any reason, so the caller falls straight back to
+    _guess_domains/_guess_ministry with zero behavior change. This is a
+    quality enhancement, not a dependency ingestion can fail on.
+    """
+    if not text.strip() or not jev_client.is_configured():
+        return None, None
+
+    state = f"Filename: {name}\n\n{text[:4000]}"
+    questions: dict[str, dict] = {
+        f"domain::{key}": {
+            "type": "noul",
+            "instructions": f"Does this government work-order document relate to {label}?",
+        }
+        for key, label in DOMAIN_HINTS
+    }
+    questions["ministry"] = {
+        "type": "choice",
+        "instructions": "Which ministry/department does this work order relate to?",
+        "criteria": dict(_MINISTRY_OPTIONS),
+    }
+
+    try:
+        answers = jev_client.evaluate(state, questions)
+        domains = [
+            label
+            for key, label in DOMAIN_HINTS
+            if answers.get(f"domain::{key}", {}).get("noul", 0) >= 0.5
+        ]
+        ministry_answer = answers.get("ministry", {}).get("choice")
+        ministry = ministry_answer if ministry_answer in _MINISTRY_OPTIONS else None
+        return (domains or None), ministry
+    except Exception as e:  # noqa: BLE001
+        log.warning("Jev classify failed for %s: %s — falling back to keyword heuristic", name, e)
+        return None, None
 
 
 def _extract_docx(path: Path) -> str:
@@ -230,12 +286,13 @@ def _extract_work_order(path: Path) -> ExtractedDoc:
     else:
         text = ""
         kind = "unknown"
+    jev_domains, jev_ministry = _jev_classify(path.name, text)
     return ExtractedDoc(
         doc_id=path.stem,
         title=title,
-        ministry=_guess_ministry(path.name),
+        ministry=jev_ministry or _guess_ministry(path.name),
         date=None,
-        domains=_guess_domains(path.name, text),
+        domains=jev_domains or _guess_domains(path.name, text),
         deliverables="",
         full_text=text[:60000],
         value_inr=0.0,
