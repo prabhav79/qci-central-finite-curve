@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { SuperDocEditor, type SuperDocEditorRef } from "@/components/SuperDocClient";
 import { RagPanel } from "@/components/RagPanel";
 import { ThreadsPanel } from "@/components/ThreadsPanel";
@@ -41,6 +41,8 @@ export function DocumentStudio({
   initialPersona?: PersonaKey;
 }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const openParamHandledRef = useRef<string | null>(null);
   const editorRef = useRef<SuperDocEditorRef | null>(null);
   const [me, setMe] = useState<CurrentUser | null>(null);
   const [persona, setPersona] = useState<PersonaKey>(initialPersona ?? "arpit");
@@ -148,6 +150,15 @@ export function DocumentStudio({
   useEffect(() => {
     if (initialDraftId) void loadDraft(initialDraftId, persona);
   }, [initialDraftId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lets a knowledge-graph document leaf that resolves to a real Draft open
+  // it here, via the same loadDraft flow the manual "Open" button uses.
+  useEffect(() => {
+    const openId = searchParams.get("open");
+    if (!openId || openParamHandledRef.current === openId) return;
+    openParamHandledRef.current = openId;
+    void loadDraft(openId, persona);
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const onBeforeUnload = (ev: BeforeUnloadEvent) => {

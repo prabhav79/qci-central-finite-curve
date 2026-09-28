@@ -15,6 +15,9 @@ export default function StudioLayout({ children }: { children: ReactNode }) {
         <Link href="/studio/templates" className="rounded px-2 py-1 hover:bg-zinc-800">
           Templates
         </Link>
+        <Link href="/studio/graph" className="rounded px-2 py-1 hover:bg-zinc-800">
+          Knowledge graph
+        </Link>
         <span className="ml-auto text-[11px] text-zinc-600">
           feat/cfc-v4-superdoc · Sprint 5
         </span>

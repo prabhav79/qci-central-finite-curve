@@ -18,10 +18,12 @@
     "@superdoc-dev/react": "^1.16.2",
     "next": "^15.5.7",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "react-force-graph-2d": "^1.29.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
+    "@playwright/test": "^1.49.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -29,7 +31,6 @@
     "eslint": "^9",
     "eslint-config-next": "^15.5.7",
     "tailwindcss": "^4",
-    "typescript": "^5",
-    "@playwright/test": "^1.49.0"
+    "typescript": "^5"
   }
 }

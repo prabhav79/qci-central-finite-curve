@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 
 from . import jev_client
 from .chunking import chunk_text
+from .corpus_db import compute_edges_for_document
 from .db import IS_POSTGRES, ROOT, SessionLocal
 from .embeddings import embed_batch, to_storage
 from .models import CorpusChunk, CorpusDocument, IngestionJob, IngestionQuota
@@ -640,6 +641,18 @@ def process_job(session: Session, job: IngestionJob) -> None:
         job.last_error = None
         job.finished_at = datetime.now(timezone.utc)
         session.commit()
+
+        # Incremental knowledge-graph edges (item 7) — enhancement, not a
+        # hard dependency: never fails the ingestion job over an edge
+        # error, same posture as _jev_classify above. The job already
+        # committed as "done" before this runs.
+        try:
+            n_edges = compute_edges_for_document(session, ed.doc_id)
+            session.commit()
+            log.info("corpus_edges: %d edge(s) upserted for %s", n_edges, ed.doc_id)
+        except Exception as e:  # noqa: BLE001
+            session.rollback()
+            log.warning("edge computation failed for %s: %s", ed.doc_id, e)
     except Exception as e:  # noqa: BLE001
         session.rollback()
         job.attempts += 1

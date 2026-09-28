@@ -249,6 +249,31 @@ class CorpusChunk(Base):
     document: Mapped[CorpusDocument] = relationship(CorpusDocument, back_populates="chunks")
 
 
+class CorpusEdge(Base):
+    """Precomputed knowledge-graph edge between two corpus documents (item 7).
+
+    One row per unordered {doc_id_a, doc_id_b} pair — doc_id_a < doc_id_b is
+    enforced in application code (corpus_db._upsert_edge), not a DB-level
+    CHECK, for SQLite/Postgres portability. weight is a cosine similarity in
+    roughly [0, 1] between the two documents' chunk-embedding centroids.
+    """
+
+    __tablename__ = "corpus_edges"
+    __table_args__ = (
+        UniqueConstraint("doc_id_a", "doc_id_b", name="uq_corpus_edges_pair"),
+        Index("ix_corpus_edges_doc_id_a", "doc_id_a"),
+        Index("ix_corpus_edges_doc_id_b", "doc_id_b"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    doc_id_a: Mapped[str] = mapped_column(String(200), nullable=False)
+    doc_id_b: Mapped[str] = mapped_column(String(200), nullable=False)
+    weight: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
 class AuditLog(Base):
     __tablename__ = "audit_logs"
     __table_args__ = (Index("ix_audit_actor_at", "actor_employee_id", "at"),)

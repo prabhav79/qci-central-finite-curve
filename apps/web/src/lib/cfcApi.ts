@@ -498,6 +498,56 @@ export async function getReindexStatus(persona: PersonaKey) {
   }>("/corpus/reindex/status", persona, { method: "GET" });
 }
 
+export type GraphNodeType = "ministry" | "domain" | "document";
+
+export type GraphNode = {
+  id: string;
+  label: string;
+  type: GraphNodeType;
+  count: number | null;
+  doc_id: string | null;
+  kind: string | null;
+  weight: number | null;
+};
+
+export type GraphChildrenResponse = {
+  parent: string;
+  nodes: GraphNode[];
+};
+
+export async function getGraphChildren(persona: PersonaKey, parent?: string) {
+  const qs = parent ? `?parent=${encodeURIComponent(parent)}` : "";
+  return apiJson<GraphChildrenResponse>(`/corpus/graph/children${qs}`, persona, {
+    method: "GET",
+  });
+}
+
+export type GraphPreviewCorpusDocument = {
+  kind: "corpus_document";
+  doc_id: string;
+  title: string;
+  ministry: string;
+  domains: string[];
+  date: string | null;
+  text: string;
+  source_kind: string;
+};
+
+export type GraphPreviewDraft = {
+  kind: "draft";
+  draft_id: string;
+};
+
+export type GraphPreviewResponse = GraphPreviewCorpusDocument | GraphPreviewDraft;
+
+export async function getGraphPreview(persona: PersonaKey, docId: string) {
+  return apiJson<GraphPreviewResponse>(
+    `/corpus/graph/preview/${encodeURIComponent(docId)}`,
+    persona,
+    { method: "GET" },
+  );
+}
+
 export type AgentFrame =
   | { type: "start"; draft_id: string; version: number; providers: string[]; tracked: boolean; can_run_agent_mutate: boolean }
   | { type: "preset"; name: string }

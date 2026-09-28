@@ -55,7 +55,16 @@ from .agent_tools import (
     dispatch as agent_dispatch,
 )
 from .corpus import corpus_stats as inmem_stats, get_document as inmem_get, list_documents as inmem_list, reload_corpus, search_corpus as inmem_search
-from .corpus_db import db_document_outline, db_get_document, db_has_corpus, db_list_documents, db_search, db_stats
+from .corpus_db import (
+    db_document_outline,
+    db_get_document,
+    db_has_corpus,
+    db_list_documents,
+    db_search,
+    db_stats,
+    graph_children,
+    recompute_all_edges,
+)
 from .db import ROOT, SessionLocal, ensure_pgvector, get_session
 from .models import AuditLog, CorpusDocument, Division, Draft, DraftApproval, DraftVersion, Thread, User
 from .rag import answer_query
@@ -2092,6 +2101,87 @@ def corpus_reindex_status(s: Session = Depends(get_session)) -> dict[str, Any]:
         "total": sum(counts.values()),
         "runpulse_pages_used_total": quota.runpulse_pages_used_total if quota else 0,
         "runpulse_page_cap": quota.runpulse_page_cap if quota else None,
+    }
+
+
+@app.post("/corpus/graph/recompute")
+def corpus_graph_recompute(
+    k: int = 8,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Admin: full corpus_edges recompute for drift correction (item 7).
+
+    Reuses the same admin-check pattern as /corpus/reindex above. Runs
+    synchronously — see corpus_db.recompute_all_edges: bounded/reasonable
+    at the current ~49-doc corpus size, unlike /corpus/reindex's OCR-bound
+    background-task treatment.
+    """
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    result = recompute_all_edges(s, k=k)
+    s.commit()
+    _log_audit(
+        s,
+        actor=user,
+        action="corpus.graph_recompute",
+        target_kind="corpus",
+        target_id="all",
+        division_code=user.division_code,
+        details=result,
+    )
+    s.commit()
+    return {"ok": True, **result}
+
+
+@app.get("/corpus/graph/children")
+def corpus_graph_children(
+    parent: str | None = None,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Lazy one-level-at-a-time knowledge-graph explorer (item 7). See
+    corpus_db.graph_children for the node-id scheme and ACL scoping
+    (division-based, reusing the same predicate as db_list_documents)."""
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    nodes = graph_children(s, parent, user=user)
+    return {"parent": parent or "root", "nodes": nodes}
+
+
+@app.get("/corpus/graph/preview/{doc_id}")
+def corpus_graph_preview(
+    doc_id: str,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Leaf-node preview for a knowledge-graph document (item 7).
+
+    Only the corpus_document branch is implemented: there is no confirmed
+    link anywhere in the current schema between CorpusDocument and Draft
+    (no shared id/foreign key — see the item-7 report), so the {"kind":
+    "draft", ...} alternative described in the frontend contract does not
+    apply yet and is intentionally not emitted here.
+    """
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    stmt = select(CorpusDocument).where(CorpusDocument.doc_id == doc_id)
+    if user.cfc_role != "apex" and not user.is_admin:
+        stmt = stmt.where(CorpusDocument.division_code == user.division_code)
+    doc = s.execute(stmt).scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="document not found")
+    return {
+        "kind": "corpus_document",
+        "doc_id": doc.doc_id,
+        "title": doc.title,
+        "ministry": doc.ministry or "Unknown",
+        "domains": doc.domains or [],
+        "date": doc.date,
+        "text": (doc.full_text or "")[:8000],
+        "source_kind": doc.kind,
     }
 
 
