@@ -4,8 +4,16 @@
    [data-theme="dark"] is set by next-themes (see layout.tsx) on <html>. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
-:root {
-  /* "Paper" (light) — warm, institutional-document personality. */
+/* @theme values must be literal colors for Tailwind to recognize them as
+   colors and generate the bg, text, and border utilities from them — a
+   var() reference here (even to a distinctly-named variable) is silently
+   skipped, generating no utility at all. So: literal "Paper" (light,
+   default) values go directly in @theme; [data-theme="dark"] below
+   overrides the same custom-property names afterward. Tailwind's generated
+   utilities reference var(--color-name) internally regardless, so the
+   override still takes effect at runtime — this is the whole point of v4's
+   CSS-variable-based theming. */
+@theme {
   --color-surface: #faf8f3;
   --color-surface-raised: #ffffff;
   --color-surface-sunken: #f0ede4;
@@ -38,13 +46,16 @@
   --color-status-changes-text: #9a3412;
   --color-status-changes-border: #fdba74;
 
-  /* Legacy tokens — kept so anything not yet migrated keeps working. */
-  --background: #ffffff;
-  --foreground: #171717;
+  --font-sans: var(--font-public-sans);
+  --font-display: var(--font-fraunces);
+  --font-mono: var(--font-geist-mono);
 }
 
 [data-theme="dark"] {
-  /* "Night" — cool, QCI-navy-derived personality (not a generic inversion). */
+  /* "Night" — cool, QCI-navy-derived personality (not a generic inversion).
+     Overrides the same custom-property names @theme declared above; every
+     bg-accent/text-surface/etc. utility already references var(--color-*)
+     internally, so this takes effect with zero utility regeneration. */
   --color-surface: #12161c;
   --color-surface-raised: #1b2028;
   --color-surface-sunken: #0b0e12;
@@ -76,59 +87,32 @@
   --color-status-changes-surface: #431407;
   --color-status-changes-text: #fdba74;
   --color-status-changes-border: #9a3412;
-
-  --background: #0a0a0a;
-  --foreground: #ededed;
-}
-
-/* `inline` so Tailwind references these vars at runtime (for the attribute-
-   selector swap above to work) instead of baking the light value into the
-   generated utility at build time. This ADDS to Tailwind's default palette —
-   it never resets it, so unmigrated files' existing zinc-*/emerald-*/etc.
-   classes keep working exactly as-is during the incremental migration. */
-@theme inline {
-  --color-surface: var(--color-surface);
-  --color-surface-raised: var(--color-surface-raised);
-  --color-surface-sunken: var(--color-surface-sunken);
-  --color-border: var(--color-border);
-  --color-border-strong: var(--color-border-strong);
-  --color-text: var(--color-text);
-  --color-text-muted: var(--color-text-muted);
-  --color-accent: var(--color-accent);
-  --color-accent-hover: var(--color-accent-hover);
-  --color-agent: var(--color-agent);
-  --color-agent-hover: var(--color-agent-hover);
-  --color-highlight: var(--color-highlight);
-  --color-focus-ring: var(--color-focus-ring);
-
-  --color-status-draft-surface: var(--color-status-draft-surface);
-  --color-status-draft-text: var(--color-status-draft-text);
-  --color-status-pending-l1-surface: var(--color-status-pending-l1-surface);
-  --color-status-pending-l1-text: var(--color-status-pending-l1-text);
-  --color-status-pending-l1-border: var(--color-status-pending-l1-border);
-  --color-status-pending-l2-surface: var(--color-status-pending-l2-surface);
-  --color-status-pending-l2-text: var(--color-status-pending-l2-text);
-  --color-status-pending-l2-border: var(--color-status-pending-l2-border);
-  --color-status-approved-surface: var(--color-status-approved-surface);
-  --color-status-approved-text: var(--color-status-approved-text);
-  --color-status-approved-border: var(--color-status-approved-border);
-  --color-status-rejected-surface: var(--color-status-rejected-surface);
-  --color-status-rejected-text: var(--color-status-rejected-text);
-  --color-status-rejected-border: var(--color-status-rejected-border);
-  --color-status-changes-surface: var(--color-status-changes-surface);
-  --color-status-changes-text: var(--color-status-changes-text);
-  --color-status-changes-border: var(--color-status-changes-border);
-
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-
-  --font-sans: var(--font-public-sans);
-  --font-display: var(--font-fraunces);
-  --font-mono: var(--font-geist-mono);
 }
 
 body {
   background: var(--color-surface);
   color: var(--color-text);
-  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Smooth, subtle entrance used on the landing page hero. Respects
+   prefers-reduced-motion — becomes a no-op fade with no movement. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-rise-in {
+  animation: rise-in 480ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise-in {
+    animation: none;
+  }
 }
