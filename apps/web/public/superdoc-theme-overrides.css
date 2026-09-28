@@ -1,0 +1,62 @@
+/*
+ * Independent theme picker for SuperDoc's own chrome (toolbar, menus,
+ * comments panel, the document page/canvas) — deliberately separate from
+ * the app's own Paper/Night theme (see globals.css). Scoped to whichever
+ * element carries data-superdoc-theme (the editor's container div in
+ * DocumentStudio.tsx), so it only affects that subtree via normal CSS
+ * custom-property inheritance, never the surrounding app chrome.
+ *
+ * Overrides SuperDoc's own semantic tier (superdoc-style.css's "5-variable
+ * theme" plus the handful of layout/canvas variables that cascade from it)
+ * with literal values — SuperDoc's bundled presets hardcode
+ * --sd-layout-page-bg, so reusing them isn't an option; these are written
+ * fresh per theme instead.
+ */
+
+[data-superdoc-theme="light"] {
+  --sd-ui-text: #211e19;
+  --sd-ui-text-muted: #6b6558;
+  --sd-ui-bg: #ffffff;
+  --sd-ui-hover-bg: #f0ede4;
+  --sd-ui-border: #e2ddd0;
+  --sd-ui-action: #0079af;
+  --sd-ui-action-hover: #005f8a;
+  --sd-layout-page-bg: #ffffff;
+  --sd-surface-canvas: #f0ede4;
+  --sd-surface-selected: #dceefa;
+  --sd-text-secondary: #6b6558;
+  --sd-border-subtle: #e2ddd0;
+  --sd-border-focus: #0079af;
+}
+
+[data-superdoc-theme="dark"] {
+  --sd-ui-text: #f2f0ea;
+  --sd-ui-text-muted: #9299a3;
+  --sd-ui-bg: #1b2028;
+  --sd-ui-hover-bg: #242b34;
+  --sd-ui-border: #333c48;
+  --sd-ui-action: #1b9bd8;
+  --sd-ui-action-hover: #3fb2e8;
+  --sd-layout-page-bg: #1e2226;
+  --sd-surface-canvas: #0b0e12;
+  --sd-surface-selected: rgba(27, 155, 216, 0.25);
+  --sd-text-secondary: #9299a3;
+  --sd-border-subtle: #242b34;
+  --sd-border-focus: #1b9bd8;
+}
+
+[data-superdoc-theme="sepia"] {
+  --sd-ui-text: #3b2f1f;
+  --sd-ui-text-muted: #8a7355;
+  --sd-ui-bg: #f4ecd8;
+  --sd-ui-hover-bg: #ead9b8;
+  --sd-ui-border: #d8c39a;
+  --sd-ui-action: #8a5a2b;
+  --sd-ui-action-hover: #6e4620;
+  --sd-layout-page-bg: #fbf3e1;
+  --sd-surface-canvas: #e8dcc0;
+  --sd-surface-selected: rgba(138, 90, 43, 0.18);
+  --sd-text-secondary: #8a7355;
+  --sd-border-subtle: #ead9b8;
+  --sd-border-focus: #8a5a2b;
+}

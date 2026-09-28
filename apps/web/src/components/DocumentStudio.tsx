@@ -77,6 +77,26 @@ export function DocumentStudio({
   // the Generate tab — otherwise it runs invisibly behind the (2b) tabs'
   // default "Draft" tab and the user never sees it happen.
   const [focusGenerateSignal, setFocusGenerateSignal] = useState(0);
+  // SuperDoc's own theme (Paper/Night/Sepia) — independent of the app's
+  // own theme (next-themes), scoped to the editor container via
+  // data-superdoc-theme + superdoc-theme-overrides.css.
+  const [superdocTheme, setSuperdocTheme] = useState<"light" | "dark" | "sepia">("light");
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("cfc-superdoc-theme");
+      if (stored === "light" || stored === "dark" || stored === "sepia") setSuperdocTheme(stored);
+    } catch {
+      // localStorage unavailable (private mode, etc.) — default stands.
+    }
+  }, []);
+  function changeSuperdocTheme(theme: "light" | "dark" | "sepia") {
+    setSuperdocTheme(theme);
+    try {
+      localStorage.setItem("cfc-superdoc-theme", theme);
+    } catch {
+      // best-effort persistence only
+    }
+  }
   const fileRev = useMemo(
     () => (file ? `${file.name}-${file.size}-${file.lastModified}` : "none"),
     [file],
@@ -597,36 +617,57 @@ export function DocumentStudio({
             // isn't guaranteed stable enough across versions to safely carve the
             // toolbar out on its own; revisit as part of the design pass if a pinned
             // toolbar turns out to matter.
-            <div
-              className="flex h-[calc(100vh-11rem)] justify-center overflow-auto"
-              key={fileRev}
-            >
-              <SuperDocEditor
-                ref={editorRef}
-                document={file}
-                documentMode={session?.document_mode ?? "viewing"}
-                role={session?.superdoc_role ?? "viewer"}
-                user={
-                  session
-                    ? {
-                        name: session.user.name,
-                        email: session.user.email,
-                      }
-                    : { name: "CFC User", email: "user@cfc.local" }
-                }
-                onReady={() => {
-                  setReady(true);
-                  setStatusMsg((s) => `${s} · editor ready`);
-                }}
-                onEditorUpdate={() => setDirty(true)}
-                onContentError={({ error }: { error?: unknown }) =>
-                  setError(error instanceof Error ? error.message : String(error))
-                }
-                onException={({ error }: { error?: unknown }) =>
-                  setError(error instanceof Error ? error.message : String(error))
-                }
-                style={{ height: "100%", minHeight: 480 }}
-              />
+            <div data-superdoc-theme={superdocTheme}>
+              <div className="flex items-center justify-end gap-1 border-b border-border bg-surface-sunken px-2 py-1">
+                <span className="mr-auto text-[10px] uppercase tracking-wide text-text-muted">
+                  Document theme
+                </span>
+                {(["light", "dark", "sepia"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => changeSuperdocTheme(t)}
+                    className={`rounded px-2 py-0.5 text-[10px] font-medium transition-colors ${
+                      superdocTheme === t
+                        ? "bg-accent text-white"
+                        : "bg-surface-raised text-text-muted hover:text-text"
+                    }`}
+                  >
+                    {t === "light" ? "Paper" : t === "dark" ? "Night" : "Sepia"}
+                  </button>
+                ))}
+              </div>
+              <div
+                className="flex h-[calc(100vh-13rem)] justify-center overflow-auto"
+                key={fileRev}
+              >
+                <SuperDocEditor
+                  ref={editorRef}
+                  document={file}
+                  documentMode={session?.document_mode ?? "viewing"}
+                  role={session?.superdoc_role ?? "viewer"}
+                  user={
+                    session
+                      ? {
+                          name: session.user.name,
+                          email: session.user.email,
+                        }
+                      : { name: "CFC User", email: "user@cfc.local" }
+                  }
+                  onReady={() => {
+                    setReady(true);
+                    setStatusMsg((s) => `${s} · editor ready`);
+                  }}
+                  onEditorUpdate={() => setDirty(true)}
+                  onContentError={({ error }: { error?: unknown }) =>
+                    setError(error instanceof Error ? error.message : String(error))
+                  }
+                  onException={({ error }: { error?: unknown }) =>
+                    setError(error instanceof Error ? error.message : String(error))
+                  }
+                  style={{ height: "100%", minHeight: 480 }}
+                />
+              </div>
             </div>
           ) : (
             <div className="flex h-[480px] flex-col items-center justify-center gap-2 text-sm text-text-muted">
