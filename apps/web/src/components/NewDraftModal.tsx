@@ -5,13 +5,20 @@ import {
   type CorpusHit,
   type GenerationTemplate,
   type PersonaKey,
+  type Provider,
   corpusSearch,
   listGenerationTemplates,
+  loadStoredApiKey,
+  storeApiKey,
 } from "@/lib/cfcApi";
 
 export type TemplateChoice =
   | { source: "catalog"; templateCode: string }
   | { source: "corpus_doc"; corpusDocId: string };
+
+export type GenerationProviderChoice = { provider: Provider; apiKey: string; model: string };
+
+const PROVIDERS: Provider[] = ["mock", "gemini", "openai", "anthropic"];
 
 function defaultTitle(): string {
   const now = new Date();
@@ -30,7 +37,12 @@ export function NewDraftModal({
   persona: PersonaKey;
   busy?: boolean;
   onCancel: () => void;
-  onConfirm: (title: string, brief: string, template: TemplateChoice) => Promise<void> | void;
+  onConfirm: (
+    title: string,
+    brief: string,
+    template: TemplateChoice,
+    generationProvider: GenerationProviderChoice,
+  ) => Promise<void> | void;
 }) {
   const [title, setTitle] = useState("");
   const [catalog, setCatalog] = useState<GenerationTemplate[]>([]);
@@ -42,6 +54,20 @@ export function NewDraftModal({
   const [selectedDoc, setSelectedDoc] = useState<{ doc_id: string; title: string } | null>(null);
   const [brief, setBrief] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [genProvider, setGenProvider] = useState<Provider>("mock");
+  const [genApiKey, setGenApiKey] = useState("");
+  const [genModel, setGenModel] = useState("");
+
+  function selectProvider(p: Provider) {
+    setGenProvider(p);
+    setGenModel("");
+    setGenApiKey(p === "mock" ? "" : loadStoredApiKey(p));
+  }
+
+  function updateGenApiKey(value: string) {
+    setGenApiKey(value);
+    storeApiKey(genProvider, value);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -53,6 +79,9 @@ export function NewDraftModal({
     setDocQuery("");
     setDocResults([]);
     setSelectedDoc(null);
+    setGenProvider("mock");
+    setGenApiKey("");
+    setGenModel("");
     void listGenerationTemplates(persona).then((res) => setCatalog(res.items));
   }, [open, persona]);
 
@@ -88,13 +117,21 @@ export function NewDraftModal({
       setError("Pick a document to base the structure on, or switch back to a fixed format.");
       return;
     }
+    if (brief.trim() && genProvider !== "mock" && !genApiKey.trim()) {
+      setError(`Enter your ${genProvider} API key, or switch to Mock for a no-key test run.`);
+      return;
+    }
     setError(null);
     const template: TemplateChoice =
       mode === "corpus_doc"
         ? { source: "corpus_doc", corpusDocId: selectedDoc!.doc_id }
         : { source: "catalog", templateCode };
     try {
-      await onConfirm(title.trim(), brief.trim(), template);
+      await onConfirm(title.trim(), brief.trim(), template, {
+        provider: genProvider,
+        apiKey: genApiKey.trim(),
+        model: genModel.trim(),
+      });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -220,6 +257,43 @@ export function NewDraftModal({
             </span>
           )}
         </label>
+
+        {brief.trim() && (
+          <div className="mt-2">
+            <span className="block text-xs text-zinc-400">Model</span>
+            <div className="mt-1 grid grid-cols-4 gap-1 text-[10px]">
+              {PROVIDERS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => selectProvider(p)}
+                  className={`rounded px-1 py-1 uppercase tracking-wide ${
+                    genProvider === p ? "bg-zinc-700 text-zinc-100" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                  }`}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+            {genProvider !== "mock" && (
+              <>
+                <input
+                  type="password"
+                  value={genApiKey}
+                  onChange={(e) => updateGenApiKey(e.target.value)}
+                  placeholder={`${genProvider} API key (BYOK — remembered in this browser only)`}
+                  className="mt-1.5 w-full rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 font-mono text-[10px] text-zinc-100"
+                />
+                <input
+                  value={genModel}
+                  onChange={(e) => setGenModel(e.target.value)}
+                  placeholder="model (optional — uses the provider default)"
+                  className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-1.5 py-1 text-[10px] text-zinc-100"
+                />
+              </>
+            )}
+          </div>
+        )}
 
         {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
 

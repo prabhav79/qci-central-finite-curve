@@ -1,9 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type AgentFrame, type PersonaKey, streamAgentChat } from "@/lib/cfcApi";
-
-type Provider = "mock" | "gemini" | "openai" | "anthropic";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  type AgentFrame,
+  type PersonaKey,
+  type Provider,
+  PROVIDER_MODELS,
+  loadStoredApiKey,
+  storeApiKey,
+  streamAgentChat,
+} from "@/lib/cfcApi";
 
 type SendResult = {
   questionText: string;
@@ -20,43 +26,7 @@ type LogEntry =
   | { kind: "error"; text: string }
   | { kind: "done"; text: string };
 
-// Remembers a BYOK key per provider, per browser — never sent anywhere but
-// straight to /agent/chat (same as typing it in fresh). Deliberately client-
-// side only: the project's BYOK design has no server-side key storage, so
-// "remembering" a key has to live in the browser, not the account.
-function apiKeyStorageKey(p: Provider): string {
-  return `cfc.agentApiKey.${p}`;
-}
-
-function loadStoredApiKey(p: Provider): string {
-  try {
-    return window.localStorage.getItem(apiKeyStorageKey(p)) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function storeApiKey(p: Provider, value: string): void {
-  try {
-    if (value) {
-      window.localStorage.setItem(apiKeyStorageKey(p), value);
-    } else {
-      window.localStorage.removeItem(apiKeyStorageKey(p));
-    }
-  } catch {
-    // Private browsing / blocked storage — key just won't persist.
-  }
-}
-
-const PROVIDER_MODELS: Record<Provider, string> = {
-  mock: "",
-  gemini: "gemini-2.0-flash",
-  openai: "gpt-4o-mini",
-  // Haiku, not Opus/Sonnet — this provider is meant for BYOK keys on a small
-  // prepaid budget; see agent_llm.py's DEFAULT_MODELS for the same choice
-  // server-side (this is only the placeholder shown before a key is typed).
-  anthropic: "claude-haiku-4-5",
-};
+type ProviderOverride = { provider: Provider; apiKey: string; model: string };
 
 type Phase = "idle" | "intake" | "generating";
 type IntakeTurn = { role: "user" | "assistant"; text: string };
@@ -83,8 +53,12 @@ export function AgentPanel({
   onThreadsChanged?: () => void;
   /** Fire a preset immediately once this draft is ready — used to kick off
    * generation right after "Create & generate" in NewDraftModal, without
-   * requiring the user to also type into this panel and click a button. */
-  autoRun?: { preset: string; prompt: string } | null;
+   * requiring the user to also type into this panel and click a button.
+   * provider/apiKey/model carry the choice made in that modal — passed as
+   * plain values (not through this panel's own provider state) because the
+   * very first send() of the run fires from this same effect tick, before
+   * a setProvider() call could take effect via React's async state update. */
+  autoRun?: { preset: string; prompt: string; provider?: Provider; apiKey?: string; model?: string } | null;
   onAutoRunConsumed?: () => void;
 }) {
   const isReviewer = superdocRole === "suggester";
@@ -121,7 +95,6 @@ export function AgentPanel({
   const [intakeTranscript, setIntakeTranscript] = useState<IntakeTurn[]>([]);
   const [intakeTurn, setIntakeTurn] = useState(1);
 
-  const effectiveModel = useMemo(() => model.trim() || PROVIDER_MODELS[provider] || "", [model, provider]);
   const needsKey = provider !== "mock";
   const canSend = !!draftId && !!prompt.trim() && !streaming && (!needsKey || !!apiKey.trim());
 
@@ -130,10 +103,15 @@ export function AgentPanel({
       preset?: string,
       promptOverride?: string,
       presetArgs?: Record<string, unknown>,
+      providerOverride?: ProviderOverride,
     ): Promise<SendResult | null> => {
       if (!draftId) return null;
       const effectivePrompt = (promptOverride ?? prompt).trim();
       if (!effectivePrompt) return null;
+      const effectiveProvider = providerOverride?.provider ?? provider;
+      const effectiveApiKey = providerOverride?.apiKey ?? apiKey;
+      const effectiveProviderModel =
+        (providerOverride?.model ?? model).trim() || PROVIDER_MODELS[effectiveProvider] || "";
       setStreaming(true);
       setOutput("");
       setLog([]);
@@ -148,9 +126,9 @@ export function AgentPanel({
           persona,
           {
             prompt: effectivePrompt,
-            provider,
-            api_key: needsKey ? apiKey.trim() : undefined,
-            model: effectiveModel || undefined,
+            provider: effectiveProvider,
+            api_key: effectiveProvider !== "mock" ? effectiveApiKey.trim() : undefined,
+            model: effectiveProviderModel || undefined,
             preset,
             preset_args: presetArgs,
           },
@@ -282,7 +260,7 @@ export function AgentPanel({
       }
       return { questionText, ready };
     },
-    [apiKey, draftId, effectiveModel, needsKey, onDraftUpdated, persona, prompt, provider],
+    [apiKey, draftId, model, onDraftUpdated, persona, prompt, provider],
   );
 
   // Runs one draft_intake turn: `replyText` is the user's answer to the
@@ -291,23 +269,24 @@ export function AgentPanel({
   // needed for that same first call, since setIntakeBrief()'s update isn't
   // visible in this closure until the next render.
   const runIntakeTurn = useCallback(
-    async (replyText?: string, briefOverride?: string) => {
+    async (replyText?: string, briefOverride?: string, providerOverride?: ProviderOverride) => {
       const brief = briefOverride ?? intakeBrief;
       const newTranscript = replyText
         ? [...intakeTranscript, { role: "user" as const, text: replyText }]
         : intakeTranscript;
       setIntakeTranscript(newTranscript);
       setPrompt("");
-      const result = await send("draft_intake", brief, {
+      const result = await send(
+        "draft_intake",
         brief,
-        transcript: newTranscript,
-        turn_count: intakeTurn,
-      });
+        { brief, transcript: newTranscript, turn_count: intakeTurn },
+        providerOverride,
+      );
       if (!result) return;
       if (result.ready) {
         setPhase("generating");
         setIntakeTranscript([]);
-        await send("draft_generator", result.ready.enrichedBrief || brief);
+        await send("draft_generator", result.ready.enrichedBrief || brief, undefined, providerOverride);
         setPhase("idle");
       } else {
         setIntakeTranscript([...newTranscript, { role: "assistant", text: result.questionText }]);
@@ -329,16 +308,30 @@ export function AgentPanel({
   useEffect(() => {
     if (!autoRun || !draftId || streaming) return;
     onAutoRunConsumed?.();
+    // The chosen provider/key travel as plain values (providerOverride) for
+    // this very first send() — setProvider() below won't be visible inside
+    // this same effect's closures until next render — but state is still
+    // updated too, so the UI reflects the choice and any later turn (e.g.
+    // answering a follow-up clarifying question) picks it up normally.
+    let providerOverride: ProviderOverride | undefined;
+    if (autoRun.provider) {
+      const resolvedApiKey = autoRun.apiKey ?? (autoRun.provider === "mock" ? "" : loadStoredApiKey(autoRun.provider));
+      const resolvedModel = autoRun.model ?? "";
+      setProvider(autoRun.provider);
+      setApiKey(resolvedApiKey);
+      setModel(resolvedModel);
+      providerOverride = { provider: autoRun.provider, apiKey: resolvedApiKey, model: resolvedModel };
+    }
     if (autoRun.preset === "draft_intake" || autoRun.preset === "draft-intake") {
       setPhase("intake");
       setIntakeBrief(autoRun.prompt);
       setIntakeTranscript([]);
       setIntakeTurn(1);
-      void runIntakeTurn(undefined, autoRun.prompt);
+      void runIntakeTurn(undefined, autoRun.prompt, providerOverride);
       return;
     }
     setPrompt(autoRun.prompt);
-    void send(autoRun.preset, autoRun.prompt);
+    void send(autoRun.preset, autoRun.prompt, undefined, providerOverride);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRun, draftId]);
 

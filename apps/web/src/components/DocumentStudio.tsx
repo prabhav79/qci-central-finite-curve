@@ -8,11 +8,12 @@ import { ThreadsPanel } from "@/components/ThreadsPanel";
 import { CorpusUploader } from "@/components/CorpusUploader";
 import { AgentPanel } from "@/components/AgentPanel";
 import { DecisionModal, type DecisionKind } from "@/components/DecisionModal";
-import { NewDraftModal, type TemplateChoice } from "@/components/NewDraftModal";
+import { NewDraftModal, type GenerationProviderChoice, type TemplateChoice } from "@/components/NewDraftModal";
 import { StudioSidebarTabs } from "@/components/StudioSidebarTabs";
 import {
   PERSONAS,
   type PersonaKey,
+  type Provider,
   type DraftRecord,
   type CorpusHit,
   type DraftSession,
@@ -65,7 +66,17 @@ export function DocumentStudio({
     | null
   >(null);
   const [newDraftOpen, setNewDraftOpen] = useState(false);
-  const [pendingGeneration, setPendingGeneration] = useState<{ preset: string; prompt: string } | null>(null);
+  const [pendingGeneration, setPendingGeneration] = useState<{
+    preset: string;
+    prompt: string;
+    provider?: Provider;
+    apiKey?: string;
+    model?: string;
+  } | null>(null);
+  // Bumped whenever a generation run auto-starts, to force the sidebar onto
+  // the Generate tab — otherwise it runs invisibly behind the (2b) tabs'
+  // default "Draft" tab and the user never sees it happen.
+  const [focusGenerateSignal, setFocusGenerateSignal] = useState(0);
   const fileRev = useMemo(
     () => (file ? `${file.name}-${file.size}-${file.lastModified}` : "none"),
     [file],
@@ -170,7 +181,12 @@ export function DocumentStudio({
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 
-  async function onCreate(title: string, brief: string, template: TemplateChoice) {
+  async function onCreate(
+    title: string,
+    brief: string,
+    template: TemplateChoice,
+    generationProvider: GenerationProviderChoice,
+  ) {
     setBusy(true);
     setError(null);
     try {
@@ -187,7 +203,14 @@ export function DocumentStudio({
       if (brief.trim()) {
         // draft_intake asks grounding questions first, then hands off to
         // draft_generator itself once ready — see AgentPanel's intake phase.
-        setPendingGeneration({ preset: "draft_intake", prompt: brief.trim() });
+        setPendingGeneration({
+          preset: "draft_intake",
+          prompt: brief.trim(),
+          provider: generationProvider.provider,
+          apiKey: generationProvider.apiKey,
+          model: generationProvider.model,
+        });
+        setFocusGenerateSignal((n) => n + 1);
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -564,7 +587,7 @@ export function DocumentStudio({
         persona={persona}
         busy={busy}
         onCancel={() => setNewDraftOpen(false)}
-        onConfirm={(title, brief, template) => onCreate(title, brief, template)}
+        onConfirm={(title, brief, template, generationProvider) => onCreate(title, brief, template, generationProvider)}
       />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_340px]">
@@ -631,6 +654,7 @@ export function DocumentStudio({
           )}
 
           <StudioSidebarTabs
+            activateGenerateSignal={focusGenerateSignal}
             draft={
               <div className="space-y-3">
                 <div className="flex gap-2">

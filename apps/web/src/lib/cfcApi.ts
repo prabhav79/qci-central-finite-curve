@@ -39,6 +39,47 @@ export const PERSONAS: Record<
   },
 };
 
+export type Provider = "mock" | "gemini" | "openai" | "anthropic";
+
+export const PROVIDER_MODELS: Record<Provider, string> = {
+  mock: "",
+  gemini: "gemini-2.0-flash",
+  openai: "gpt-4o-mini",
+  // Haiku, not Opus/Sonnet — meant for BYOK keys on a small prepaid budget;
+  // see agent_llm.py's DEFAULT_MODELS for the same choice server-side.
+  anthropic: "claude-haiku-4-5",
+};
+
+// Remembers a BYOK key per provider, per browser — never sent anywhere but
+// straight to /agent/chat (same as typing it in fresh). Deliberately client-
+// side only: the project's BYOK design has no server-side key storage, so
+// "remembering" a key has to live in the browser, not the account. Shared
+// between AgentPanel and NewDraftModal so a key entered in one place is
+// visible in the other.
+export function apiKeyStorageKey(p: Provider): string {
+  return `cfc.agentApiKey.${p}`;
+}
+
+export function loadStoredApiKey(p: Provider): string {
+  try {
+    return window.localStorage.getItem(apiKeyStorageKey(p)) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function storeApiKey(p: Provider, value: string): void {
+  try {
+    if (value) {
+      window.localStorage.setItem(apiKeyStorageKey(p), value);
+    } else {
+      window.localStorage.removeItem(apiKeyStorageKey(p));
+    }
+  } catch {
+    // Private browsing / blocked storage — key just won't persist.
+  }
+}
+
 export type DraftSession = {
   draft_id: string;
   user: {

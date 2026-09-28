@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 type TabKey = "draft" | "generate" | "research" | "corpus" | "comments";
 
@@ -25,15 +25,26 @@ export function StudioSidebarTabs({
   research,
   corpus,
   comments,
+  activateGenerateSignal,
 }: {
   draft: ReactNode;
   generate: ReactNode;
   research: ReactNode;
   corpus: ReactNode;
   comments: ReactNode;
+  /** Bump this (e.g. a counter) to force-switch to the Generate tab — used
+   * when a generation run auto-starts (e.g. "Create & generate" in
+   * NewDraftModal) so the user actually sees it happen instead of landing
+   * on Draft while it runs unseen behind a hidden tab. 0/undefined never
+   * triggers, so a fresh mount doesn't jump tabs on its own. */
+  activateGenerateSignal?: number;
 }) {
   const [active, setActive] = useState<TabKey>("draft");
   const content: Record<TabKey, ReactNode> = { draft, generate, research, corpus, comments };
+
+  useEffect(() => {
+    if (activateGenerateSignal) setActive("generate");
+  }, [activateGenerateSignal]);
 
   return (
     <div>
