@@ -133,4 +133,15 @@ body {
   .animate-rise-in {
     animation: none;
   }
+
+  /* Global safety net: every transition/animation added by this overhaul
+     (hover states, tab switches, the chevron rotation, etc.) collapses to
+     effectively instant rather than being disabled one class at a time. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

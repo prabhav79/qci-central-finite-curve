@@ -8,6 +8,7 @@ import {
   listTemplates,
   uploadCorpusTemplate,
 } from "@/lib/cfcApi";
+import { EmptyState } from "@/components/EmptyState";
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -69,16 +70,16 @@ export function TemplatesAdmin() {
   }
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
+    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6 text-text">
       <header className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-semibold">Template library</h1>
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-text-muted">
           DOCX substrates makers pick from when creating a new draft. Admin persona to upload.
         </p>
-        <label className="ml-auto text-xs text-zinc-400">
+        <label className="ml-auto text-xs text-text-muted">
           Persona
           <select
-            className="ml-2 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm"
+            className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
             value={persona}
             onChange={(e) => setPersona(e.target.value as PersonaKey)}
           >
@@ -92,36 +93,36 @@ export function TemplatesAdmin() {
       </header>
 
       {error && (
-        <div className="rounded border border-red-900 bg-red-950/40 p-3 text-sm text-red-200">{error}</div>
+        <div className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-3 text-sm text-status-rejected-text">{error}</div>
       )}
       {status && (
-        <div className="rounded border border-emerald-900 bg-emerald-950/40 p-3 text-sm text-emerald-200">
+        <div className="rounded-lg border border-status-approved-border bg-status-approved-surface p-3 text-sm text-status-approved-text">
           {status}
         </div>
       )}
 
       <section>
-        <h2 className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+        <h2 className="mb-2 text-xs uppercase tracking-wide text-text-muted">
           Registered · {items.length}
         </h2>
         <ul className="space-y-2">
           {items.length === 0 && (
-            <li className="rounded border border-dashed border-zinc-800 p-4 text-sm text-zinc-500">
-              No templates registered yet.
+            <li>
+              <EmptyState>No templates registered yet.</EmptyState>
             </li>
           )}
           {items.map((t) => (
             <li
               key={t.template_code}
-              className="flex items-center gap-3 rounded border border-zinc-800 bg-zinc-900/60 p-3 text-sm"
+              className="flex items-center gap-3 rounded-lg border border-border bg-surface-raised p-3 text-sm"
             >
               <div className="min-w-0 flex-1">
-                <div className="font-mono text-zinc-100">{t.template_code}</div>
-                <div className="text-[11px] text-zinc-500">
+                <div className="font-mono text-text">{t.template_code}</div>
+                <div className="text-[11px] text-text-muted">
                   {t.filename} · {fmtBytes(t.bytes)} · modified {t.modified_at.slice(0, 19)}
                 </div>
               </div>
-              <span className="rounded bg-zinc-800 px-2 py-0.5 font-mono text-[10px] text-zinc-400">
+              <span className="rounded bg-surface-sunken px-2 py-0.5 font-mono text-[10px] text-text-muted">
                 {t.path}
               </span>
             </li>
@@ -130,11 +131,11 @@ export function TemplatesAdmin() {
       </section>
 
       <section
-        className={`rounded border p-3 ${
-          isAdmin ? "border-zinc-800 bg-zinc-900/60" : "border-dashed border-zinc-800 opacity-60"
+        className={`rounded-lg border p-3 ${
+          isAdmin ? "border-border bg-surface-raised" : "border-dashed border-border-strong opacity-60"
         }`}
       >
-        <h2 className="mb-2 text-xs uppercase tracking-wide text-zinc-500">
+        <h2 className="mb-2 text-xs uppercase tracking-wide text-text-muted">
           Upload new template {isAdmin ? "" : "(admin persona required)"}
         </h2>
         <input
@@ -142,21 +143,21 @@ export function TemplatesAdmin() {
           type="file"
           accept=".docx"
           disabled={!isAdmin}
-          className="block w-full text-xs text-zinc-300 file:mr-2 file:rounded file:border-0 file:bg-zinc-800 file:px-2 file:py-1 file:text-xs file:text-zinc-200 hover:file:bg-zinc-700"
+          className="block w-full text-xs text-text file:mr-2 file:rounded file:border-0 file:bg-surface-sunken file:px-2 file:py-1 file:text-xs file:text-text hover:file:bg-border"
         />
         <input
           value={templateCode}
           onChange={(e) => setTemplateCode(e.target.value)}
           placeholder="TEMPLATE_CODE (e.g. WO_EXTENSION)"
           disabled={!isAdmin}
-          className="mt-2 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-sm text-zinc-100 disabled:opacity-50"
+          className="mt-2 w-full rounded-lg border border-border-strong bg-surface-sunken px-2 py-1 text-sm text-text outline-none focus:border-accent disabled:opacity-50"
         />
         <div className="mt-2">
           <button
             type="button"
             onClick={() => void upload()}
             disabled={!isAdmin || busy}
-            className="rounded bg-emerald-700 px-3 py-1.5 text-sm font-medium hover:bg-emerald-600 disabled:opacity-50"
+            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
           >
             {busy ? "Uploading…" : "Upload template"}
           </button>
