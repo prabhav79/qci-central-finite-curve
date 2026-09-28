@@ -539,6 +539,22 @@ export async function getReindexStatus(persona: PersonaKey) {
   }>("/corpus/reindex/status", persona, { method: "GET" });
 }
 
+export async function reclassifyCorpus(persona: PersonaKey) {
+  return apiJson<{ ok: boolean; documents: number; changed: number }>(
+    "/corpus/reclassify",
+    persona,
+    { method: "POST", body: "{}" },
+  );
+}
+
+export async function recomputeGraph(persona: PersonaKey) {
+  return apiJson<{ ok: boolean; documents: number; edges_upserted: number }>(
+    "/corpus/graph/recompute",
+    persona,
+    { method: "POST", body: "{}" },
+  );
+}
+
 export type GraphNodeType = "ministry" | "domain" | "document";
 
 export type GraphNode = {

@@ -260,14 +260,28 @@ def _extract_processed_json(path: Path) -> ExtractedDoc:
         value_inr = float(meta.get("value_inr") or 0)
     except (TypeError, ValueError):
         value_inr = 0.0
+    title = str(meta.get("project_subject") or doc_id)
+    full_text = str(content.get("full_text") or "")
+
+    # RunPulse's own meta.ministry/meta.domains are raw free text (not
+    # canonicalized) — different files describe the same real ministry with
+    # different exact wording, which fragments the knowledge-graph grouping
+    # (see plan item 7's ministry-fragmentation note). Classify like every
+    # other kind instead of trusting the raw metadata verbatim: same
+    # canonical set (_MINISTRY_OPTIONS / DOMAIN_HINTS) either way, whether
+    # Jev is configured (preferred) or not (keyword fallback).
+    jev_domains, jev_ministry = _jev_classify(title, full_text)
+    ministry = jev_ministry or _guess_ministry(title) or str(meta.get("ministry") or "Unknown")
+    domains = jev_domains or _guess_domains(title, full_text) or list(meta.get("domains") or [])
+
     return ExtractedDoc(
         doc_id=doc_id,
-        title=str(meta.get("project_subject") or doc_id),
-        ministry=str(meta.get("ministry") or "Unknown"),
+        title=title,
+        ministry=ministry,
         date=meta.get("date"),
-        domains=list(meta.get("domains") or []),
+        domains=domains,
         deliverables=str(meta.get("deliverables") or ""),
-        full_text=str(content.get("full_text") or ""),
+        full_text=full_text,
         value_inr=value_inr,
         source_path=_rel(path),
         kind="processed_json",
@@ -696,6 +710,36 @@ def run_worker_pool(*, n_workers: int | None = None, max_jobs: int | None = None
     for t in threads:
         t.join()
     return totals
+
+
+def reclassify_document(session: Session, doc: CorpusDocument) -> bool:
+    """Re-run domain/ministry classification against an ALREADY-ingested
+    document's stored full_text — no re-extraction, no OCR, no re-embedding.
+
+    Needed because ingestion's change detection is raw-file-hash based: a
+    document ingested before TYPESAFE_API_KEY existed (or before this file's
+    processed_json classification gap was fixed) never gets reclassified on
+    its own just because the underlying code changed — the source file on
+    disk hasn't changed. Returns True if the row's ministry/domains changed.
+    """
+    jev_domains, jev_ministry = _jev_classify(doc.title, doc.full_text or "")
+    ministry = jev_ministry or _guess_ministry(doc.title)
+    domains = jev_domains or _guess_domains(doc.title, doc.full_text or "")
+    changed = ministry != doc.ministry or domains != (doc.domains or [])
+    doc.ministry = ministry
+    doc.domains = domains
+    return changed
+
+
+def reclassify_all(session: Session) -> dict[str, int]:
+    """Reclassify every CorpusDocument in place. Cheap (Jev calls only, no
+    OCR/embeddings) — safe to run synchronously like recompute_all_edges."""
+    docs = session.execute(select(CorpusDocument)).scalars().all()
+    changed = 0
+    for doc in docs:
+        if reclassify_document(session, doc):
+            changed += 1
+    return {"documents": len(docs), "changed": changed}
 
 
 def _cli() -> None:

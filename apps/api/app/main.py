@@ -2136,6 +2136,42 @@ def corpus_graph_recompute(
     return {"ok": True, **result}
 
 
+@app.post("/corpus/reclassify")
+def corpus_reclassify(
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Admin: re-run domain/ministry classification against every already-
+    ingested document's STORED text (item 6a) — no re-extraction, no OCR, no
+    re-embedding, so this is cheap and safe to run synchronously.
+
+    Needed because ingestion's change detection is raw-file-hash based: a
+    document ingested before TYPESAFE_API_KEY existed, or before
+    processed_json documents were included in classification at all, never
+    gets reclassified on its own just because the code changed underneath
+    it — the file on disk hasn't changed, so it never gets re-queued.
+    """
+    from .ingest import reclassify_all  # noqa: PLC0415
+
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    result = reclassify_all(s)
+    s.commit()
+    _log_audit(
+        s,
+        actor=user,
+        action="corpus.reclassify",
+        target_kind="corpus",
+        target_id="all",
+        division_code=user.division_code,
+        details=result,
+    )
+    s.commit()
+    return {"ok": True, **result}
+
+
 @app.get("/corpus/graph/children")
 def corpus_graph_children(
     parent: str | None = None,

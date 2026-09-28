@@ -7,6 +7,8 @@ import {
   uploadCorpusTemplate,
   reindexCorpus,
   getReindexStatus,
+  reclassifyCorpus,
+  recomputeGraph,
 } from "@/lib/cfcApi";
 
 type Mode = "wo" | "template";
@@ -98,6 +100,35 @@ export function CorpusUploader({
     }
   }
 
+  async function onReclassify() {
+    setBusy(true);
+    setError(null);
+    setStatus("Reclassifying corpus documents…");
+    try {
+      const r = await reclassifyCorpus(persona);
+      setStatus(`Reclassified: ${r.changed}/${r.documents} document(s) updated.`);
+      onIngested?.();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onRecomputeGraph() {
+    setBusy(true);
+    setError(null);
+    setStatus("Recomputing knowledge-graph edges…");
+    try {
+      const r = await recomputeGraph(persona);
+      setStatus(`Graph recomputed: ${r.edges_upserted} edge(s) across ${r.documents} document(s).`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2">
       <div className="mb-2 flex items-center justify-between">
@@ -161,15 +192,35 @@ export function CorpusUploader({
           {busy ? "…" : mode === "template" ? "Upload template" : "Upload & index"}
         </button>
         {isAdmin && (
-          <button
-            type="button"
-            onClick={() => void onReindex()}
-            disabled={busy}
-            className="ml-auto rounded border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
-            title="Rebuild the entire corpus index (~1 min)"
-          >
-            Reindex all
-          </button>
+          <div className="ml-auto flex gap-1">
+            <button
+              type="button"
+              onClick={() => void onReindex()}
+              disabled={busy}
+              className="rounded border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+              title="Rebuild the entire corpus index (~1 min)"
+            >
+              Reindex all
+            </button>
+            <button
+              type="button"
+              onClick={() => void onReclassify()}
+              disabled={busy}
+              className="rounded border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+              title="Re-run domain/ministry classification against already-ingested documents (cheap — no re-extraction or OCR)"
+            >
+              Reclassify
+            </button>
+            <button
+              type="button"
+              onClick={() => void onRecomputeGraph()}
+              disabled={busy}
+              className="rounded border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+              title="Recompute knowledge-graph related-document edges"
+            >
+              Recompute graph
+            </button>
+          </div>
         )}
       </div>
 
