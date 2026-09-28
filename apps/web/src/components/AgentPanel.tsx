@@ -102,6 +102,16 @@ export function AgentPanel({
   const [log, setLog] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Throttles onDraftUpdated during a run: draft_generator emits one
+  // draft_updated frame per section (up to 7 per run), and each one was
+  // triggering a full editor reload (loadDraft: refetch + SuperDoc reinit)
+  // back to back — visible as rapid flicker. Collapse same-run updates to
+  // at most one reload per window, always flushing the final version once
+  // the stream ends so the editor never ends up stale.
+  const draftUpdateRef = useRef<{ timer: ReturnType<typeof setTimeout> | null; pendingVersion: number | null }>({
+    timer: null,
+    pendingVersion: null,
+  });
 
   // draft_intake state (2a) — a clarifying Q&A round that precedes
   // draft_generator; see agent_presets.draft_intake_system for why the
@@ -194,13 +204,25 @@ export function AgentPanel({
                 }
                 break;
               }
-              case "draft_updated":
+              case "draft_updated": {
                 setLog((L) => [
                   ...L,
                   { kind: "draft_updated", version: frame.version, tracked: frame.tracked },
                 ]);
-                onDraftUpdated?.(frame.version);
+                const ref = draftUpdateRef.current;
+                if (!ref.timer) {
+                  onDraftUpdated?.(frame.version);
+                  ref.pendingVersion = null;
+                  ref.timer = setTimeout(() => {
+                    ref.timer = null;
+                  }, 1500);
+                } else {
+                  // Throttled — a later section will supersede this one, so
+                  // just remember its version for the end-of-run flush.
+                  ref.pendingVersion = frame.version;
+                }
                 break;
+              }
               case "section_start":
                 setLog((L) => [...L, { kind: "section", text: `Drafting ${frame.title}…` }]);
                 break;
@@ -248,6 +270,15 @@ export function AgentPanel({
       } finally {
         setStreaming(false);
         abortRef.current = null;
+        const ref = draftUpdateRef.current;
+        if (ref.timer) {
+          clearTimeout(ref.timer);
+          ref.timer = null;
+        }
+        if (ref.pendingVersion != null) {
+          onDraftUpdated?.(ref.pendingVersion);
+          ref.pendingVersion = null;
+        }
       }
       return { questionText, ready };
     },
