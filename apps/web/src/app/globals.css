@@ -1,26 +1,134 @@
 @import "tailwindcss";
 
+/* Tailwind v4's CSS-first replacement for tailwind.config.js's darkMode key.
+   [data-theme="dark"] is set by next-themes (see layout.tsx) on <html>. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 :root {
+  /* "Paper" (light) — warm, institutional-document personality. */
+  --color-surface: #faf8f3;
+  --color-surface-raised: #ffffff;
+  --color-surface-sunken: #f0ede4;
+  --color-border: #e2ddd0;
+  --color-border-strong: #c9c2ae;
+  --color-text: #211e19;
+  --color-text-muted: #6b6558;
+  --color-accent: #0079af; /* QCI brand teal, confirmed from qcin.org computed style */
+  --color-accent-hover: #005f8a;
+  --color-agent: #6b2e3a; /* deep wine — AI/generation-specific actions */
+  --color-agent-hover: #551f29;
+  --color-highlight: #d9691e; /* QCI-orange-derived, used sparingly */
+  --color-focus-ring: #0079af;
+
+  --color-status-draft-surface: #e4e4e7;
+  --color-status-draft-text: #3f3f46;
+  --color-status-pending-l1-surface: #fef3c7;
+  --color-status-pending-l1-text: #92400e;
+  --color-status-pending-l1-border: #f59e0b;
+  --color-status-pending-l2-surface: #ede9fe;
+  --color-status-pending-l2-text: #5b21b6;
+  --color-status-pending-l2-border: #a78bfa;
+  --color-status-approved-surface: #d1fae5;
+  --color-status-approved-text: #065f46;
+  --color-status-approved-border: #6ee7b7;
+  --color-status-rejected-surface: #fee2e2;
+  --color-status-rejected-text: #991b1b;
+  --color-status-rejected-border: #fca5a5;
+  --color-status-changes-surface: #ffedd5;
+  --color-status-changes-text: #9a3412;
+  --color-status-changes-border: #fdba74;
+
+  /* Legacy tokens — kept so anything not yet migrated keeps working. */
   --background: #ffffff;
   --foreground: #171717;
 }
 
+[data-theme="dark"] {
+  /* "Night" — cool, QCI-navy-derived personality (not a generic inversion). */
+  --color-surface: #12161c;
+  --color-surface-raised: #1b2028;
+  --color-surface-sunken: #0b0e12;
+  --color-border: #242b34;
+  --color-border-strong: #333c48;
+  --color-text: #f2f0ea;
+  --color-text-muted: #9299a3;
+  --color-accent: #1b9bd8;
+  --color-accent-hover: #3fb2e8;
+  --color-agent: #b5566a;
+  --color-agent-hover: #c97487;
+  --color-highlight: #e8873f;
+  --color-focus-ring: #1b9bd8;
+
+  --color-status-draft-surface: #27272a;
+  --color-status-draft-text: #d4d4d8;
+  --color-status-pending-l1-surface: #451a03;
+  --color-status-pending-l1-text: #fcd34d;
+  --color-status-pending-l1-border: #92400e;
+  --color-status-pending-l2-surface: #2e1065;
+  --color-status-pending-l2-text: #c4b5fd;
+  --color-status-pending-l2-border: #5b21b6;
+  --color-status-approved-surface: #022c22;
+  --color-status-approved-text: #6ee7b7;
+  --color-status-approved-border: #065f46;
+  --color-status-rejected-surface: #450a0a;
+  --color-status-rejected-text: #fca5a5;
+  --color-status-rejected-border: #991b1b;
+  --color-status-changes-surface: #431407;
+  --color-status-changes-text: #fdba74;
+  --color-status-changes-border: #9a3412;
+
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+/* `inline` so Tailwind references these vars at runtime (for the attribute-
+   selector swap above to work) instead of baking the light value into the
+   generated utility at build time. This ADDS to Tailwind's default palette —
+   it never resets it, so unmigrated files' existing zinc-*/emerald-*/etc.
+   classes keep working exactly as-is during the incremental migration. */
 @theme inline {
+  --color-surface: var(--color-surface);
+  --color-surface-raised: var(--color-surface-raised);
+  --color-surface-sunken: var(--color-surface-sunken);
+  --color-border: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
+  --color-text: var(--color-text);
+  --color-text-muted: var(--color-text-muted);
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-agent: var(--color-agent);
+  --color-agent-hover: var(--color-agent-hover);
+  --color-highlight: var(--color-highlight);
+  --color-focus-ring: var(--color-focus-ring);
+
+  --color-status-draft-surface: var(--color-status-draft-surface);
+  --color-status-draft-text: var(--color-status-draft-text);
+  --color-status-pending-l1-surface: var(--color-status-pending-l1-surface);
+  --color-status-pending-l1-text: var(--color-status-pending-l1-text);
+  --color-status-pending-l1-border: var(--color-status-pending-l1-border);
+  --color-status-pending-l2-surface: var(--color-status-pending-l2-surface);
+  --color-status-pending-l2-text: var(--color-status-pending-l2-text);
+  --color-status-pending-l2-border: var(--color-status-pending-l2-border);
+  --color-status-approved-surface: var(--color-status-approved-surface);
+  --color-status-approved-text: var(--color-status-approved-text);
+  --color-status-approved-border: var(--color-status-approved-border);
+  --color-status-rejected-surface: var(--color-status-rejected-surface);
+  --color-status-rejected-text: var(--color-status-rejected-text);
+  --color-status-rejected-border: var(--color-status-rejected-border);
+  --color-status-changes-surface: var(--color-status-changes-surface);
+  --color-status-changes-text: var(--color-status-changes-text);
+  --color-status-changes-border: var(--color-status-changes-border);
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+
+  --font-sans: var(--font-public-sans);
+  --font-display: var(--font-fraunces);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
 }

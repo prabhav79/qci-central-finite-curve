@@ -1,9 +1,15 @@
 ﻿import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Fraunces, Geist_Mono, Public_Sans } from "next/font/google";
+import { ThemeProvider } from "next-themes";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const publicSans = Public_Sans({
+  variable: "--font-public-sans",
+  subsets: ["latin"],
+});
+
+const fraunces = Fraunces({
+  variable: "--font-fraunces",
   subsets: ["latin"],
 });
 
@@ -23,9 +29,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
-      <body className={`${geistSans.variable} ${geistMono.variable} min-h-screen bg-zinc-950 text-zinc-100 antialiased`}>
-        {children}
+    <html lang="en" suppressHydrationWarning>
+      <body
+        className={`${publicSans.variable} ${fraunces.variable} ${geistMono.variable} min-h-screen bg-surface text-text antialiased`}
+      >
+        <ThemeProvider attribute="data-theme" defaultTheme="system" enableSystem storageKey="cfc-theme">
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );
