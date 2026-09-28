@@ -13,9 +13,11 @@ type Filter = "open" | "resolved" | "all";
 
 function KindTag({ kind }: { kind: ThreadRecord["kind"] }) {
   const tone: Record<ThreadRecord["kind"], string> = {
-    review_reason: "bg-orange-900 text-orange-200 border border-orange-800",
-    comment: "bg-cyan-900 text-cyan-200 border border-cyan-800",
-    tracked_change: "bg-violet-900 text-violet-200 border border-violet-800",
+    review_reason:
+      "bg-status-changes-surface text-status-changes-text border border-status-changes-border",
+    comment: "bg-accent/10 text-accent border border-accent/30",
+    tracked_change:
+      "bg-status-pending-l2-surface text-status-pending-l2-text border border-status-pending-l2-border",
   };
   const label: Record<ThreadRecord["kind"], string> = {
     review_reason: "Review",
@@ -102,19 +104,19 @@ export function ThreadsPanel({
   }
 
   return (
-    <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2">
+    <div className="rounded-lg border border-border bg-surface-sunken p-2">
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-xs uppercase tracking-wide text-zinc-500">
-          Threads {openCount > 0 && <span className="ml-1 text-cyan-400">({openCount} open)</span>}
+        <div className="text-xs uppercase tracking-wide text-text-muted">
+          Threads {openCount > 0 && <span className="ml-1 text-accent">({openCount} open)</span>}
         </div>
-        <div className="flex gap-0.5 rounded border border-zinc-700 bg-zinc-950 p-0.5 text-[10px]">
+        <div className="flex gap-0.5 rounded-lg border border-border bg-surface-raised p-0.5 text-[10px]">
           {(["open", "resolved", "all"] as Filter[]).map((f) => (
             <button
               key={f}
               type="button"
               onClick={() => setFilter(f)}
-              className={`rounded px-1.5 py-0.5 uppercase tracking-wide ${
-                filter === f ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+              className={`rounded px-1.5 py-0.5 uppercase tracking-wide transition-colors ${
+                filter === f ? "bg-accent text-white" : "text-text-muted hover:text-text"
               }`}
             >
               {f}
@@ -124,11 +126,11 @@ export function ThreadsPanel({
       </div>
 
       {!draftId && (
-        <p className="text-[11px] text-zinc-500">Open a draft to view threads.</p>
+        <p className="text-[11px] text-text-muted">Open a draft to view threads.</p>
       )}
 
       {draftId && filtered.length === 0 && (
-        <p className="text-[11px] text-zinc-600">
+        <p className="text-[11px] text-text-muted">
           {filter === "resolved" ? "No resolved threads." : "No threads yet."}
         </p>
       )}
@@ -137,31 +139,31 @@ export function ThreadsPanel({
         {filtered.map((t) => (
           <li
             key={t.id}
-            className={`rounded border p-1.5 text-[11px] ${
+            className={`rounded-lg border p-1.5 text-[11px] ${
               t.resolved
-                ? "border-zinc-800 bg-zinc-950/60 opacity-60"
+                ? "border-border bg-surface-raised/60 opacity-60"
                 : t.kind === "review_reason"
-                  ? "border-orange-900 bg-orange-950/30"
-                  : "border-zinc-800 bg-zinc-950"
+                  ? "border-status-changes-border bg-status-changes-surface/40"
+                  : "border-border bg-surface-raised"
             }`}
           >
             <div className="mb-1 flex items-center gap-1.5">
               <KindTag kind={t.kind} />
-              <span className="truncate text-zinc-400">
+              <span className="truncate text-text-muted">
                 {t.author_name ?? t.author_employee_id ?? "unknown"}
               </span>
               <button
                 type="button"
                 onClick={() => void toggleResolved(t)}
                 disabled={busy}
-                className="ml-auto rounded border border-zinc-700 px-1.5 py-0.5 text-[9px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+                className="ml-auto rounded border border-border-strong px-1.5 py-0.5 text-[9px] text-text-muted transition-colors hover:bg-surface-sunken disabled:opacity-50"
               >
                 {t.resolved ? "Reopen" : "Resolve"}
               </button>
             </div>
-            <div className="whitespace-pre-wrap text-zinc-200">{t.body}</div>
+            <div className="whitespace-pre-wrap text-text">{t.body}</div>
             {t.created_at && (
-              <div className="mt-1 text-[9px] text-zinc-600">{t.created_at.slice(0, 19)}</div>
+              <div className="mt-1 text-[9px] text-text-muted">{t.created_at.slice(0, 19)}</div>
             )}
           </li>
         ))}
@@ -174,14 +176,14 @@ export function ThreadsPanel({
             onChange={(e) => setNewComment(e.target.value)}
             rows={2}
             placeholder="Add a comment on this draft…"
-            className="w-full rounded border border-zinc-700 bg-zinc-950 p-1.5 text-[11px] text-zinc-100 focus:border-blue-500 focus:outline-none"
+            className="w-full rounded-lg border border-border-strong bg-surface-raised p-1.5 text-[11px] text-text outline-none focus:border-accent"
           />
           <div className="flex justify-end">
             <button
               type="button"
               disabled={busy || !newComment.trim()}
               onClick={() => void addComment()}
-              className="rounded bg-cyan-700 px-2 py-1 text-[10px] font-medium hover:bg-cyan-600 disabled:opacity-50"
+              className="rounded-lg bg-accent px-2 py-1 text-[10px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
             >
               {busy ? "…" : "Post"}
             </button>
@@ -189,7 +191,9 @@ export function ThreadsPanel({
         </div>
       )}
 
-      {error && <p className="mt-1 text-[10px] text-red-400">{error}</p>}
+      {error && (
+        <p className="mt-1 text-[10px] text-status-rejected-text">{error}</p>
+      )}
     </div>
   );
 }

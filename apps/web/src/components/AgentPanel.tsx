@@ -341,18 +341,18 @@ export function AgentPanel({
   }
 
   return (
-    <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2">
+    <div className="rounded-lg border border-border bg-surface-sunken p-2">
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-xs uppercase tracking-wide text-zinc-500">
+        <div className="text-xs uppercase tracking-wide text-text-muted">
           {isReviewer ? "Review" : "Ask the agent"}
         </div>
-        <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[9px] text-zinc-400">
-          {isReviewer ? "suggest only" : "Sprint 4"}
+        <span className="rounded-full bg-agent/10 px-1.5 py-0.5 text-[9px] font-medium text-agent">
+          {isReviewer ? "suggest only" : canRunAgent ? "insert & edit" : "read-only"}
         </span>
       </div>
 
       {!draftId && (
-        <p className="text-[11px] text-zinc-500">Open a draft to run the agent.</p>
+        <p className="text-[11px] text-text-muted">Open a draft to run the agent.</p>
       )}
 
       {draftId && (
@@ -367,8 +367,8 @@ export function AgentPanel({
                   setModel("");
                   setApiKey(loadStoredApiKey(p));
                 }}
-                className={`rounded px-1 py-1 uppercase tracking-wide ${
-                  provider === p ? "bg-zinc-700 text-zinc-100" : "bg-zinc-950 text-zinc-500 hover:text-zinc-300"
+                className={`rounded-md px-1 py-1 uppercase tracking-wide transition-colors ${
+                  provider === p ? "bg-agent text-white" : "bg-surface-raised text-text-muted hover:text-text"
                 }`}
               >
                 {p}
@@ -382,7 +382,7 @@ export function AgentPanel({
               value={apiKey}
               onChange={(e) => updateApiKey(e.target.value)}
               placeholder={`${provider} API key (BYOK — remembered in this browser only)`}
-              className="mt-1.5 w-full rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 font-mono text-[10px] text-zinc-100"
+              className="mt-1.5 w-full rounded-lg border border-border-strong bg-surface-raised px-1.5 py-1 font-mono text-[10px] text-text outline-none focus:border-accent"
             />
           )}
           {needsKey && (
@@ -390,12 +390,12 @@ export function AgentPanel({
               value={model}
               onChange={(e) => setModel(e.target.value)}
               placeholder={`model (default: ${PROVIDER_MODELS[provider]})`}
-              className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 text-[10px] text-zinc-100"
+              className="mt-1 w-full rounded-lg border border-border-strong bg-surface-raised px-1.5 py-1 text-[10px] text-text outline-none focus:border-accent"
             />
           )}
 
           {phase === "intake" && intakeTranscript.length > 0 && (
-            <p className="mt-1.5 text-[11px] text-amber-300">
+            <p className="mt-1.5 rounded-lg border border-agent/30 bg-agent/10 p-2 text-[11px] text-text">
               {intakeTranscript[intakeTranscript.length - 1].text}
             </p>
           )}
@@ -414,7 +414,7 @@ export function AgentPanel({
                     ? "Ask the agent to insert / modify sections using precedent, or describe a new document to generate."
                     : "Read-only for this persona/status — the agent can search but not mutate."
             }
-            className="mt-1.5 w-full rounded border border-zinc-700 bg-zinc-950 p-1.5 text-[11px] text-zinc-100 focus:border-blue-500 focus:outline-none disabled:opacity-50"
+            className="mt-1.5 w-full rounded-lg border border-border-strong bg-surface-raised p-1.5 text-[11px] text-text outline-none focus:border-accent disabled:opacity-50"
           />
 
           <div className="mt-1.5 flex flex-wrap items-center gap-1">
@@ -424,7 +424,7 @@ export function AgentPanel({
                   type="button"
                   disabled={!draftId || !prompt.trim() || streaming}
                   onClick={() => void runIntakeTurn(prompt.trim())}
-                  className="rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium hover:bg-indigo-500 disabled:opacity-50"
+                  className="rounded-lg bg-agent px-2 py-1 text-[11px] font-medium text-white transition-colors hover:bg-agent-hover disabled:opacity-50"
                 >
                   {streaming ? "…" : "Send reply"}
                 </button>
@@ -432,7 +432,7 @@ export function AgentPanel({
                   type="button"
                   disabled={streaming}
                   onClick={() => void skipIntake()}
-                  className="rounded border border-zinc-600 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                  className="rounded-lg border border-border-strong px-2 py-1 text-[10px] text-text transition-colors hover:bg-surface-raised disabled:opacity-50"
                   title="Generate now from the original brief, without answering more questions"
                 >
                   Skip questions, generate now
@@ -443,7 +443,7 @@ export function AgentPanel({
                 type="button"
                 disabled={!canSend || phase === "generating"}
                 onClick={() => void send()}
-                className="rounded bg-indigo-600 px-2 py-1 text-[11px] font-medium hover:bg-indigo-500 disabled:opacity-50"
+                className="rounded-lg bg-agent px-2 py-1 text-[11px] font-medium text-white transition-colors hover:bg-agent-hover disabled:opacity-50"
               >
                 {streaming ? "…" : isReviewer ? "Post review" : "Run agent"}
               </button>
@@ -452,7 +452,7 @@ export function AgentPanel({
               <button
                 type="button"
                 onClick={cancel}
-                className="ml-auto rounded border border-zinc-600 px-2 py-1 text-[10px] text-zinc-300 hover:bg-zinc-800"
+                className="ml-auto rounded-lg border border-border-strong px-2 py-1 text-[10px] text-text transition-colors hover:bg-surface-raised"
               >
                 Cancel
               </button>
@@ -460,7 +460,7 @@ export function AgentPanel({
           </div>
 
           {output && (
-            <div className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-zinc-800 bg-zinc-950 p-1.5 text-[11px] text-zinc-200">
+            <div className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-surface-raised p-1.5 text-[11px] text-text">
               {output}
             </div>
           )}
@@ -468,57 +468,57 @@ export function AgentPanel({
           {log.length > 0 && (
             <ul className="mt-2 max-h-48 space-y-1 overflow-auto text-[10px]">
               {log.map((entry, i) => (
-                <li key={i} className="rounded border border-zinc-800 bg-zinc-950 px-1.5 py-1">
+                <li key={i} className="rounded-lg border border-border bg-surface-raised px-1.5 py-1">
                   {entry.kind === "start" && (
-                    <span className="text-zinc-400">
-                      <span className="mr-1 text-[9px] uppercase text-zinc-500">start</span>
+                    <span className="text-text-muted">
+                      <span className="mr-1 text-[9px] uppercase text-text-muted">start</span>
                       {entry.text}
                     </span>
                   )}
                   {entry.kind === "preset" && (
-                    <span className="text-indigo-300">
-                      <span className="mr-1 text-[9px] uppercase text-zinc-500">preset</span>
+                    <span className="text-agent">
+                      <span className="mr-1 text-[9px] uppercase text-text-muted">preset</span>
                       {entry.text}
                     </span>
                   )}
                   {entry.kind === "tool_call" && (
                     <div>
-                      <span className="mr-1 text-[9px] uppercase text-cyan-400">call</span>
-                      <span className="font-mono text-cyan-200">{entry.tool}</span>
-                      <span className="ml-1 text-zinc-500">{entry.args}</span>
+                      <span className="mr-1 text-[9px] uppercase text-accent">call</span>
+                      <span className="font-mono text-accent">{entry.tool}</span>
+                      <span className="ml-1 text-text-muted">{entry.args}</span>
                     </div>
                   )}
                   {entry.kind === "tool_result" && (
                     <div>
                       <span
-                        className={`mr-1 text-[9px] uppercase ${entry.ok ? "text-emerald-400" : "text-red-400"}`}
+                        className={`mr-1 text-[9px] uppercase ${entry.ok ? "text-status-approved-text" : "text-status-rejected-text"}`}
                       >
                         {entry.ok ? "result" : "err"}
                       </span>
-                      <span className="font-mono text-zinc-300">{entry.tool}</span>
-                      <span className="ml-1 text-zinc-500">{entry.snippet}</span>
+                      <span className="font-mono text-text">{entry.tool}</span>
+                      <span className="ml-1 text-text-muted">{entry.snippet}</span>
                     </div>
                   )}
                   {entry.kind === "draft_updated" && (
-                    <div className="text-emerald-300">
-                      <span className="mr-1 text-[9px] uppercase text-emerald-500">draft</span>
+                    <div className="text-status-approved-text">
+                      <span className="mr-1 text-[9px] uppercase">draft</span>
                       v{entry.version} written{entry.tracked ? " (tracked)" : ""}
                     </div>
                   )}
                   {entry.kind === "section" && (
-                    <div className={entry.ok === false ? "text-red-400" : "text-amber-300"}>
-                      <span className="mr-1 text-[9px] uppercase text-amber-500">section</span>
+                    <div className={entry.ok === false ? "text-status-rejected-text" : "text-agent"}>
+                      <span className="mr-1 text-[9px] uppercase">section</span>
                       {entry.text}
                     </div>
                   )}
                   {entry.kind === "done" && (
-                    <span className="text-zinc-500">
+                    <span className="text-text-muted">
                       <span className="mr-1 text-[9px] uppercase">done</span>
                       {entry.text}
                     </span>
                   )}
                   {entry.kind === "error" && (
-                    <span className="text-red-400">
+                    <span className="text-status-rejected-text">
                       <span className="mr-1 text-[9px] uppercase">error</span>
                       {entry.text}
                     </span>
@@ -529,7 +529,7 @@ export function AgentPanel({
           )}
 
           {error && (
-            <p className="mt-1 text-[10px] text-red-400">{error}</p>
+            <p className="mt-1 text-[10px] text-status-rejected-text">{error}</p>
           )}
         </>
       )}

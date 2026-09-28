@@ -29,7 +29,18 @@ export function CorpusUploader({
   const [templateCode, setTemplateCode] = useState("");
   const [ministry, setMinistry] = useState("");
   const [domain, setDomain] = useState("");
+  const [dragOver, setDragOver] = useState(false);
+  const [fileName, setFileName] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
+
+  function handleFiles(files: FileList | null) {
+    const f = files?.[0];
+    if (!f || !fileRef.current) return;
+    const dt = new DataTransfer();
+    dt.items.add(f);
+    fileRef.current.files = dt.files;
+    setFileName(f.name);
+  }
 
   async function submit() {
     const f = fileRef.current?.files?.[0];
@@ -58,6 +69,7 @@ export function CorpusUploader({
         );
       }
       if (fileRef.current) fileRef.current.value = "";
+      setFileName(null);
       onIngested?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -130,18 +142,18 @@ export function CorpusUploader({
   }
 
   return (
-    <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2">
+    <div className="rounded-lg border border-border bg-surface-sunken p-2">
       <div className="mb-2 flex items-center justify-between">
-        <div className="text-xs uppercase tracking-wide text-zinc-500">Corpus upload</div>
+        <div className="text-xs uppercase tracking-wide text-text-muted">Corpus upload</div>
         {isAdmin && (
-          <div className="flex gap-0.5 rounded border border-zinc-700 bg-zinc-950 p-0.5 text-[10px]">
+          <div className="flex gap-0.5 rounded-lg border border-border bg-surface-raised p-0.5 text-[10px]">
             {(["wo", "template"] as Mode[]).map((m) => (
               <button
                 key={m}
                 type="button"
                 onClick={() => setMode(m)}
-                className={`rounded px-1.5 py-0.5 uppercase tracking-wide ${
-                  mode === m ? "bg-zinc-700 text-zinc-100" : "text-zinc-500 hover:text-zinc-300"
+                className={`rounded px-1.5 py-0.5 uppercase tracking-wide transition-colors ${
+                  mode === m ? "bg-accent text-white" : "text-text-muted hover:text-text"
                 }`}
               >
                 {m === "wo" ? "Work order" : "Template"}
@@ -151,19 +163,45 @@ export function CorpusUploader({
         )}
       </div>
 
-      <input
-        ref={fileRef}
-        type="file"
-        accept={mode === "template" ? ".docx" : ".docx,.pdf"}
-        className="block w-full text-[11px] text-zinc-300 file:mr-2 file:rounded file:border-0 file:bg-zinc-800 file:px-2 file:py-1 file:text-[11px] file:text-zinc-200 hover:file:bg-zinc-700"
-      />
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          handleFiles(e.dataTransfer.files);
+        }}
+        onClick={() => fileRef.current?.click()}
+        className={`flex cursor-pointer flex-col items-center justify-center gap-0.5 rounded-lg border-2 border-dashed p-3 text-center transition-colors ${
+          dragOver ? "border-accent bg-accent/5" : "border-border-strong hover:border-accent/50"
+        }`}
+      >
+        <input
+          ref={fileRef}
+          type="file"
+          accept={mode === "template" ? ".docx" : ".docx,.pdf"}
+          onChange={(e) => handleFiles(e.target.files)}
+          className="hidden"
+        />
+        <p className="text-[11px] text-text">
+          {fileName ? (
+            <span className="font-medium">{fileName}</span>
+          ) : (
+            "Drop a file here, or click to browse"
+          )}
+        </p>
+        <p className="text-[10px] text-text-muted">{mode === "template" ? "DOCX" : "DOCX or PDF"}</p>
+      </div>
 
       {mode === "template" ? (
         <input
           value={templateCode}
           onChange={(e) => setTemplateCode(e.target.value)}
           placeholder="Template code (e.g. WO_EXTENSION)"
-          className="mt-1.5 w-full rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 text-[11px] text-zinc-100"
+          className="mt-1.5 w-full rounded-lg border border-border-strong bg-surface-raised px-1.5 py-1 text-[11px] text-text outline-none focus:border-accent"
         />
       ) : (
         <div className="mt-1.5 grid grid-cols-2 gap-1.5">
@@ -171,33 +209,34 @@ export function CorpusUploader({
             value={ministry}
             onChange={(e) => setMinistry(e.target.value)}
             placeholder="Ministry (optional)"
-            className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 text-[11px] text-zinc-100"
+            className="rounded-lg border border-border-strong bg-surface-raised px-1.5 py-1 text-[11px] text-text outline-none focus:border-accent"
           />
           <input
             value={domain}
             onChange={(e) => setDomain(e.target.value)}
             placeholder="Domain tag (optional)"
-            className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-1 text-[11px] text-zinc-100"
+            className="rounded-lg border border-border-strong bg-surface-raised px-1.5 py-1 text-[11px] text-text outline-none focus:border-accent"
           />
         </div>
       )}
 
-      <div className="mt-2 flex items-center gap-1">
+      <div className="mt-2 flex flex-wrap items-center gap-1 rounded-lg border border-border bg-surface-raised p-1">
         <button
           type="button"
           onClick={() => void submit()}
           disabled={busy}
-          className="rounded bg-emerald-700 px-2 py-1 text-[11px] font-medium hover:bg-emerald-600 disabled:opacity-50"
+          className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
           {busy ? "…" : mode === "template" ? "Upload template" : "Upload & index"}
         </button>
         {isAdmin && (
-          <div className="ml-auto flex gap-1">
+          <>
+            <div className="mx-0.5 h-4 w-px bg-border" />
             <button
               type="button"
               onClick={() => void onReindex()}
               disabled={busy}
-              className="rounded border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+              className="rounded-md px-2 py-1 text-[10px] text-text-muted transition-colors hover:bg-surface-sunken hover:text-text disabled:opacity-50"
               title="Rebuild the entire corpus index (~1 min)"
             >
               Reindex all
@@ -206,7 +245,7 @@ export function CorpusUploader({
               type="button"
               onClick={() => void onReclassify()}
               disabled={busy}
-              className="rounded border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+              className="rounded-md px-2 py-1 text-[10px] text-text-muted transition-colors hover:bg-surface-sunken hover:text-text disabled:opacity-50"
               title="Re-run domain/ministry classification against already-ingested documents (cheap — no re-extraction or OCR)"
             >
               Reclassify
@@ -215,19 +254,19 @@ export function CorpusUploader({
               type="button"
               onClick={() => void onRecomputeGraph()}
               disabled={busy}
-              className="rounded border border-zinc-700 px-2 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-50"
+              className="rounded-md px-2 py-1 text-[10px] text-text-muted transition-colors hover:bg-surface-sunken hover:text-text disabled:opacity-50"
               title="Recompute knowledge-graph related-document edges"
             >
               Recompute graph
             </button>
-          </div>
+          </>
         )}
       </div>
 
       {status && (
-        <p className="mt-1 whitespace-pre-wrap text-[10px] text-emerald-300">{status}</p>
+        <p className="mt-1 whitespace-pre-wrap text-[10px] text-status-approved-text">{status}</p>
       )}
-      {error && <p className="mt-1 text-[10px] text-red-400">{error}</p>}
+      {error && <p className="mt-1 text-[10px] text-status-rejected-text">{error}</p>}
     </div>
   );
 }

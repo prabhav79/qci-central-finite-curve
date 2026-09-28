@@ -77,32 +77,32 @@ export function RagPanel({
   }
 
   return (
-    <div className="flex h-full min-h-[280px] flex-col gap-2 rounded-xl border border-zinc-800 bg-zinc-950 p-3">
+    <div className="flex h-full min-h-[280px] flex-col gap-2 rounded-xl border border-border bg-surface-raised p-3">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <div className="text-sm font-medium text-zinc-100">Institutional RAG</div>
-          <div className="text-[11px] text-zinc-500">{stats}</div>
+          <div className="text-sm font-medium text-text">Institutional RAG</div>
+          <div className="text-[11px] text-text-muted">{stats}</div>
         </div>
-        <div className="text-[10px] uppercase tracking-wide text-zinc-600">early</div>
+        <div className="text-[10px] uppercase tracking-wide text-text-muted">early</div>
       </div>
-      <div className="min-h-0 flex-1 space-y-2 overflow-auto rounded border border-zinc-900 bg-zinc-900/40 p-2 text-xs">
+      <div className="min-h-0 flex-1 space-y-2 overflow-auto rounded-lg border border-border bg-surface-sunken p-2 text-xs">
         {msgs.length === 0 && (
-          <p className="text-zinc-500">
+          <p className="text-text-muted">
             Ask about work orders, deliverables, ministries, or PMU extensions. Insert citations into the open SuperDoc draft when editing is allowed.
           </p>
         )}
         {msgs.map((m, i) => (
-          <div key={i} className={m.role === "user" ? "rounded bg-emerald-950/40 p-2 text-emerald-100" : "rounded bg-zinc-900 p-2 text-zinc-200"}>
-            <div className="mb-1 text-[10px] uppercase text-zinc-500">{m.role}{m.provider ? " / " + m.provider : ""}</div>
+          <div key={i} className={m.role === "user" ? "rounded-lg bg-accent/10 p-2 text-text" : "rounded-lg bg-surface-raised p-2 text-text"}>
+            <div className="mb-1 text-[10px] uppercase text-text-muted">{m.role}{m.provider ? " / " + m.provider : ""}</div>
             <div className="whitespace-pre-wrap">{m.content}</div>
             {m.citations && m.citations.length > 0 && (
-              <ul className="mt-2 space-y-2 border-t border-zinc-800 pt-2 text-[10px] text-zinc-400">
+              <ul className="mt-2 space-y-2 border-t border-border pt-2 text-[10px] text-text-muted">
                 {m.citations.slice(0, 6).map((c) => (
                   <li key={c.chunk_id} className="space-y-1">
-                    <div><span className="font-mono text-zinc-300">[{c.score}]</span> {c.title} - {c.ministry}{c.kind ? " (" + c.kind + ")" : ""}</div>
-                    <div className="line-clamp-2 text-zinc-500">{c.text}</div>
+                    <div><span className="font-mono text-text">[{c.score}]</span> {c.title} - {c.ministry}{c.kind ? " (" + c.kind + ")" : ""}</div>
+                    <div className="line-clamp-2 text-text-muted">{c.text}</div>
                     {canInsert && onInsertCitation && (
-                      <button type="button" disabled={inserting === c.chunk_id} onClick={() => void handleInsert(c)} className="rounded border border-sky-800 bg-sky-950/50 px-2 py-0.5 text-[10px] text-sky-200 hover:bg-sky-900 disabled:opacity-50">
+                      <button type="button" disabled={inserting === c.chunk_id} onClick={() => void handleInsert(c)} className="rounded border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] text-accent transition-colors hover:bg-accent/20 disabled:opacity-50">
                         {inserting === c.chunk_id ? "Inserting..." : "Insert into draft"}
                       </button>
                     )}
@@ -113,11 +113,11 @@ export function RagPanel({
           </div>
         ))}
       </div>
-      {notice && <div className="rounded border border-emerald-900 bg-emerald-950/40 p-2 text-[11px] text-emerald-200">{notice}</div>}
-      {error && <div className="rounded border border-red-900 bg-red-950/40 p-2 text-[11px] text-red-300">{error}</div>}
+      {notice && <div className="rounded-lg border border-status-approved-border bg-status-approved-surface p-2 text-[11px] text-status-approved-text">{notice}</div>}
+      {error && <div className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-2 text-[11px] text-status-rejected-text">{error}</div>}
       <div className="flex gap-2">
-        <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onAsk(); } }} placeholder="Ask the institutional corpus..." className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs" />
-        <button type="button" disabled={busy || !input.trim()} onClick={() => void onAsk()} className="rounded bg-sky-700 px-3 py-1.5 text-xs font-medium hover:bg-sky-600 disabled:opacity-50">{busy ? "..." : "Ask"}</button>
+        <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void onAsk(); } }} placeholder="Ask the institutional corpus..." className="min-w-0 flex-1 rounded-lg border border-border-strong bg-surface-sunken px-2 py-1.5 text-xs text-text outline-none focus:border-accent" />
+        <button type="button" disabled={busy || !input.trim()} onClick={() => void onAsk()} className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50">{busy ? "..." : "Ask"}</button>
       </div>
     </div>
   );
