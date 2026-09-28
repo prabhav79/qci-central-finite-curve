@@ -54,8 +54,10 @@ export function StudioSidebarTabs({
             key={t.key}
             type="button"
             onClick={() => setActive(t.key)}
-            className={`rounded px-2 py-1 ${
-              active === t.key ? "bg-zinc-700 text-zinc-100" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+            className={`rounded-md px-2 py-1 font-medium transition-colors ${
+              active === t.key
+                ? "bg-accent text-white"
+                : "bg-surface-sunken text-text-muted hover:text-text"
             }`}
           >
             {t.label}

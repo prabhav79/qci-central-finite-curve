@@ -3,6 +3,25 @@
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { verifyMagicLink } from "@/lib/cfcApi";
+import { AuthShell } from "@/components/AuthShell";
+
+function Spinner() {
+  return (
+    <div
+      className="h-6 w-6 animate-spin rounded-full border-2 border-border-strong border-t-accent"
+      aria-hidden
+    />
+  );
+}
+
+function SigningIn() {
+  return (
+    <div className="flex flex-col items-center gap-3 text-center">
+      <Spinner />
+      <p className="text-sm text-text-muted">Signing you in…</p>
+    </div>
+  );
+}
 
 function VerifyInner() {
   const router = useRouter();
@@ -33,25 +52,25 @@ function VerifyInner() {
   if (error) {
     return (
       <div className="flex flex-col items-center gap-4 text-center">
-        <p className="rounded-lg border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
+        <p className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-3 text-sm text-status-rejected-text">
           {error}
         </p>
-        <a href="/login" className="text-sm text-emerald-400 underline hover:text-emerald-300">
+        <a href="/login" className="text-sm text-accent underline hover:text-accent-hover">
           Back to sign in
         </a>
       </div>
     );
   }
 
-  return <p className="text-sm text-zinc-400">Signing you in…</p>;
+  return <SigningIn />;
 }
 
 export default function VerifyPage() {
   return (
-    <main className="mx-auto flex min-h-screen max-w-sm flex-col items-center justify-center gap-6 p-8">
-      <Suspense fallback={<p className="text-sm text-zinc-400">Signing you in…</p>}>
+    <AuthShell>
+      <Suspense fallback={<SigningIn />}>
         <VerifyInner />
       </Suspense>
-    </main>
+    </AuthShell>
   );
 }

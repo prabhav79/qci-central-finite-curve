@@ -429,34 +429,30 @@ export function DocumentStudio({
   }
 
   return (
-    <div className="flex h-[calc(100vh-2rem)] flex-col gap-3 p-4 text-zinc-100">
-      <header className="flex flex-wrap items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-950/80 p-3">
-        <div className="mr-auto min-w-[220px]">
-          <h1 className="text-lg font-semibold tracking-tight">CFC Document Studio</h1>
-          <p className="text-xs text-zinc-400">
-            Early shell · SuperDoc editor · RBAC personas · versioned DOCX
-          </p>
-          <p className="mt-1 text-[11px] text-zinc-500">{health}</p>
+    <div className="flex h-[calc(100vh-2rem)] flex-col gap-3 p-4 text-text">
+      <header className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface-raised p-3">
+        <div className="mr-auto min-w-[160px]">
+          <p className="text-[11px] text-text-muted">{health}</p>
         </div>
         {me && (
-          <div className="flex items-center gap-2 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300">
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-surface-sunken px-2 py-1 text-xs text-text-muted">
             <span>
-              Signed in as <span className="font-medium text-zinc-100">{me.name}</span>
+              Signed in as <span className="font-medium text-text">{me.name}</span>
               {me.designation ? ` · ${me.designation}` : ""}
             </span>
             <button
               type="button"
               onClick={() => void logout().then(() => router.push("/login"))}
-              className="rounded border border-zinc-600 px-2 py-0.5 hover:bg-zinc-800"
+              className="rounded border border-border-strong px-2 py-0.5 transition-colors hover:bg-surface-raised hover:text-text"
             >
               Sign out
             </button>
           </div>
         )}
-        <label className="text-xs text-zinc-400">
+        <label className="text-xs text-text-muted">
           Persona (dev)
           <select
-            className="ml-2 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm"
+            className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
             value={persona}
             onChange={(e) => void onPersonaChange(e.target.value as PersonaKey)}
           >
@@ -471,7 +467,7 @@ export function DocumentStudio({
           type="button"
           disabled={busy}
           onClick={() => setNewDraftOpen(true)}
-          className="rounded bg-emerald-600 px-3 py-1.5 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
           New draft
         </button>
@@ -479,7 +475,7 @@ export function DocumentStudio({
           type="button"
           disabled={busy}
           onClick={() => void onCreateFromWorker()}
-          className="rounded bg-teal-700 px-3 py-1.5 text-sm font-medium hover:bg-teal-600 disabled:opacity-50"
+          className="rounded-lg bg-agent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-agent-hover disabled:opacity-50"
           title="Requires npm run dev:doc-worker"
         >
           Generate via worker
@@ -488,7 +484,7 @@ export function DocumentStudio({
           type="button"
           disabled={busy || !session?.can_save || !ready}
           onClick={() => void onSave()}
-          className="rounded bg-blue-600 px-3 py-1.5 text-sm font-medium hover:bg-blue-500 disabled:opacity-50"
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
           Save DOCX
         </button>
@@ -496,7 +492,7 @@ export function DocumentStudio({
           type="button"
           disabled={!ready}
           onClick={() => void onExportDownload()}
-          className="rounded border border-zinc-600 px-3 py-1.5 text-sm hover:bg-zinc-800 disabled:opacity-50"
+          className="rounded-lg border border-border-strong px-3 py-1.5 text-sm text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
         >
           Download
         </button>
@@ -504,17 +500,17 @@ export function DocumentStudio({
           type="button"
           disabled={busy || !session?.can_submit}
           onClick={() => void onSubmit()}
-          className="rounded bg-amber-600 px-3 py-1.5 text-sm font-medium hover:bg-amber-500 disabled:opacity-50"
+          className="rounded-lg bg-action-changes px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-action-changes-hover disabled:opacity-50"
         >
           Submit L1
         </button>
         {session?.can_decide_l1 && (
-          <div className="flex items-center gap-1 rounded border border-violet-800 bg-violet-950/40 p-0.5">
+          <div className="flex items-center gap-1 rounded-lg border border-border bg-surface-sunken p-0.5">
             <button
               type="button"
               disabled={busy}
               onClick={() => void onApprove(1)}
-              className="rounded bg-violet-600 px-2.5 py-1 text-xs font-medium hover:bg-violet-500 disabled:opacity-50"
+              className="rounded-md bg-action-approve px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-action-approve-hover disabled:opacity-50"
               title="L1 Approve → sends to L2"
             >
               L1 Approve
@@ -523,7 +519,7 @@ export function DocumentStudio({
               type="button"
               disabled={busy}
               onClick={() => setDecisionDialog({ level: 1, kind: "changes_requested" })}
-              className="rounded px-2 py-1 text-xs text-violet-200 hover:bg-violet-900/50 disabled:opacity-50"
+              className="rounded-md px-2 py-1 text-xs text-action-changes transition-colors hover:bg-surface-raised disabled:opacity-50"
               title="Send back to maker with a written reason"
             >
               Changes
@@ -532,7 +528,7 @@ export function DocumentStudio({
               type="button"
               disabled={busy}
               onClick={() => setDecisionDialog({ level: 1, kind: "reject" })}
-              className="rounded px-2 py-1 text-xs text-red-300 hover:bg-red-900/50 disabled:opacity-50"
+              className="rounded-md px-2 py-1 text-xs text-action-reject transition-colors hover:bg-surface-raised disabled:opacity-50"
               title="Reject the draft with a written reason"
             >
               Reject
@@ -540,12 +536,12 @@ export function DocumentStudio({
           </div>
         )}
         {session?.can_decide_l2 && (
-          <div className="flex items-center gap-1 rounded border border-fuchsia-800 bg-fuchsia-950/40 p-0.5">
+          <div className="flex items-center gap-1 rounded-lg border border-border bg-surface-sunken p-0.5">
             <button
               type="button"
               disabled={busy}
               onClick={() => void onApprove(2)}
-              className="rounded bg-fuchsia-700 px-2.5 py-1 text-xs font-medium hover:bg-fuchsia-600 disabled:opacity-50"
+              className="rounded-md bg-action-approve px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-action-approve-hover disabled:opacity-50"
               title="L2 Final → seals FINAL_APPROVED"
             >
               L2 Final
@@ -554,7 +550,7 @@ export function DocumentStudio({
               type="button"
               disabled={busy}
               onClick={() => setDecisionDialog({ level: 2, kind: "changes_requested" })}
-              className="rounded px-2 py-1 text-xs text-fuchsia-200 hover:bg-fuchsia-900/50 disabled:opacity-50"
+              className="rounded-md px-2 py-1 text-xs text-action-changes transition-colors hover:bg-surface-raised disabled:opacity-50"
             >
               Changes
             </button>
@@ -562,7 +558,7 @@ export function DocumentStudio({
               type="button"
               disabled={busy}
               onClick={() => setDecisionDialog({ level: 2, kind: "reject" })}
-              className="rounded px-2 py-1 text-xs text-red-300 hover:bg-red-900/50 disabled:opacity-50"
+              className="rounded-md px-2 py-1 text-xs text-action-reject transition-colors hover:bg-surface-raised disabled:opacity-50"
             >
               Reject
             </button>
@@ -591,7 +587,7 @@ export function DocumentStudio({
       />
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_340px]">
-        <section className="min-h-0 overflow-auto rounded-xl border border-zinc-800 bg-zinc-950">
+        <section className="min-h-0 overflow-auto rounded-xl border border-border bg-surface-raised">
           {file ? (
             // SuperDoc's own CSS defines no overflow/scroll rules at all — it expects
             // the host app to be the scroll container (confirmed: none of its internal
@@ -633,22 +629,22 @@ export function DocumentStudio({
               />
             </div>
           ) : (
-            <div className="flex h-[480px] flex-col items-center justify-center gap-2 text-sm text-zinc-500">
+            <div className="flex h-[480px] flex-col items-center justify-center gap-2 text-sm text-text-muted">
               <p>No document loaded.</p>
               <p className="text-xs">New draft · Generate via worker · or open a draft id</p>
             </div>
           )}
         </section>
 
-        <aside className="space-y-3 overflow-auto rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm">
+        <aside className="space-y-3 overflow-auto rounded-xl border border-border bg-surface-raised p-3 text-sm">
           {/* Status/error reflect document-level actions (Save, Submit,
            * decisions) — kept always visible regardless of which tab is
            * active, rather than buried inside one panel. */}
-          <div className="rounded border border-zinc-800 bg-zinc-900/60 p-2 text-xs text-zinc-400">
+          <div className="rounded-lg border border-border bg-surface-sunken p-2 text-xs text-text-muted">
             {statusMsg}
           </div>
           {error && (
-            <div className="rounded border border-red-900 bg-red-950/50 p-2 text-xs text-red-300">
+            <div className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-2 text-xs text-status-rejected-text">
               {error}
             </div>
           )}
@@ -662,21 +658,21 @@ export function DocumentStudio({
                     value={openIdInput}
                     onChange={(e) => setOpenIdInput(e.target.value)}
                     placeholder="draft id"
-                    className="min-w-0 flex-1 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-xs"
+                    className="min-w-0 flex-1 rounded-lg border border-border-strong bg-surface-sunken px-2 py-1 font-mono text-xs text-text outline-none focus:border-accent"
                   />
                   <button
                     type="button"
                     disabled={busy || !openIdInput.trim()}
                     onClick={() => void onOpenId()}
-                    className="rounded border border-zinc-600 px-2 py-1 text-xs hover:bg-zinc-800 disabled:opacity-50"
+                    className="rounded-lg border border-border-strong px-2 py-1 text-xs text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
                   >
                     Open
                   </button>
                 </div>
 
                 <div>
-                  <div className="text-xs uppercase tracking-wide text-zinc-500">Workflow</div>
-                  <dl className="mt-2 space-y-1 text-zinc-300">
+                  <div className="text-xs uppercase tracking-wide text-text-muted">Workflow</div>
+                  <dl className="mt-2 space-y-1 text-text">
                     <div className="flex justify-between gap-2">
                       <dt>Draft</dt>
                       <dd className="font-mono text-xs">{draftId ?? "—"}</dd>
@@ -711,20 +707,20 @@ export function DocumentStudio({
                 </div>
 
                 <div>
-                  <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500">
+                  <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-text-muted">
                     <span>Versions</span>
                     {draftId && versions && versions.length >= 2 && (
                       <a
                         href={`/studio/diff?draft=${encodeURIComponent(draftId)}&from=${
                           versions[versions.length - 2].version
                         }&to=${versions[versions.length - 1].version}&persona=${persona}`}
-                        className="text-[10px] normal-case tracking-normal text-blue-400 hover:underline"
+                        className="text-[10px] normal-case tracking-normal text-accent hover:underline"
                       >
                         diff last 2
                       </a>
                     )}
                   </div>
-                  <ul className="max-h-28 space-y-1 overflow-auto text-[11px] text-zinc-400">
+                  <ul className="max-h-28 space-y-1 overflow-auto text-[11px] text-text-muted">
                     {(versions || []).length === 0 && <li>No versions yet</li>}
                     {[...(versions || [])].reverse().map((v, i, arr) => {
                       const prev = arr[i + 1];
@@ -736,7 +732,7 @@ export function DocumentStudio({
                           {prev && draftId && (
                             <a
                               href={`/studio/diff?draft=${encodeURIComponent(draftId)}&from=${prev.version}&to=${v.version}&persona=${persona}`}
-                              className="ml-auto text-[9px] text-blue-400 hover:underline"
+                              className="ml-auto text-[9px] text-accent hover:underline"
                               title={`diff v${prev.version} → v${v.version}`}
                             >
                               diff
@@ -749,20 +745,20 @@ export function DocumentStudio({
                 </div>
 
                 <div>
-                  <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">Recent drafts</div>
+                  <div className="mb-1 text-xs uppercase tracking-wide text-text-muted">Recent drafts</div>
                   <ul className="max-h-40 space-y-1 overflow-auto text-[11px]">
                     {recent.length === 0 && (
-                      <li className="text-zinc-500">None yet — create a draft</li>
+                      <li className="text-text-muted">None yet — create a draft</li>
                     )}
                     {recent.map((item) => (
                       <li key={item.draft.id}>
                         <button
                           type="button"
-                          className="w-full rounded px-1 py-0.5 text-left hover:bg-zinc-900"
+                          className="w-full rounded px-1 py-0.5 text-left transition-colors hover:bg-surface-sunken"
                           onClick={() => void loadDraft(item.draft.id, persona)}
                         >
-                          <span className="font-mono text-zinc-300">{item.draft.id}</span>
-                          <span className="block truncate text-zinc-500">
+                          <span className="font-mono text-text">{item.draft.id}</span>
+                          <span className="block truncate text-text-muted">
                             {item.draft.status} · {item.draft.title}
                           </span>
                         </button>
@@ -807,11 +803,11 @@ export function DocumentStudio({
             }
           />
 
-          <div className="text-[11px] text-zinc-500">
+          <div className="text-[11px] text-text-muted">
             Demo path: Arpit generates → edit/save → Submit L1 → switch Aashna → L1
             Approve → Subroto → L2 Final.
             <br />
-            Worker button needs <code className="text-zinc-400">npm run dev:doc-worker</code>.
+            Worker button needs <code className="text-text">npm run dev:doc-worker</code>.
           </div>
         </aside>
       </div>

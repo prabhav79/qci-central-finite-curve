@@ -46,6 +46,17 @@
   --color-status-changes-text: #9a3412;
   --color-status-changes-border: #fdba74;
 
+  /* Solid, always-readable-with-white-text button fills for the three
+     workflow decision actions — distinct from the status-*-text tokens
+     above, which are tuned for text-on-tinted-surface (pill) contrast and
+     go too light/desaturated in dark mode to work as a button fill. */
+  --color-action-approve: #16a34a;
+  --color-action-approve-hover: #15803d;
+  --color-action-reject: #dc2626;
+  --color-action-reject-hover: #b91c1c;
+  --color-action-changes: #d97706;
+  --color-action-changes-hover: #b45309;
+
   --font-sans: var(--font-public-sans);
   --font-display: var(--font-fraunces);
   --font-mono: var(--font-geist-mono);
@@ -87,6 +98,13 @@
   --color-status-changes-surface: #431407;
   --color-status-changes-text: #fdba74;
   --color-status-changes-border: #9a3412;
+
+  --color-action-approve: #22c55e;
+  --color-action-approve-hover: #4ade80;
+  --color-action-reject: #ef4444;
+  --color-action-reject-hover: #f87171;
+  --color-action-changes: #f59e0b;
+  --color-action-changes-hover: #fbbf24;
 }
 
 body {

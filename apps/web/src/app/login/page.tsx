@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { requestMagicLink } from "@/lib/cfcApi";
+import { AuthShell } from "@/components/AuthShell";
 
 type Status =
   | { kind: "idle" }
@@ -35,58 +36,55 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 p-8">
-      <div>
-        <p className="text-sm uppercase tracking-[0.2em] text-emerald-400">QCI · PPID</p>
-        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Sign in to CFC</h1>
-        <p className="mt-2 text-sm text-zinc-400">
-          Use your @qcin.org email. We&apos;ll send a one-click sign-in link.
-        </p>
-      </div>
-
-      <form onSubmit={onSubmit} className="flex flex-col gap-3">
-        <input
-          type="email"
-          required
-          placeholder="you@qcin.org"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          className="rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm outline-none focus:border-emerald-500"
-        />
-        <button
-          type="submit"
-          disabled={status.kind === "sending"}
-          className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500 disabled:opacity-50"
-        >
-          {status.kind === "sending" ? "Sending…" : "Send sign-in link"}
-        </button>
-      </form>
-
-      {status.kind === "sent-email" && (
-        <p className="rounded-lg border border-emerald-800 bg-emerald-950/40 p-3 text-sm text-emerald-300">
-          Check your inbox at {email} for a sign-in link. It expires in 15 minutes.
-        </p>
-      )}
-
-      {status.kind === "sent-dev-link" && (
-        <div className="rounded-lg border border-amber-800 bg-amber-950/40 p-3 text-sm text-amber-200">
-          <p className="mb-2">
-            No email delivery configured yet — use this link to sign in:
+    <AuthShell>
+      <div className="flex flex-col gap-6">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-[0.2em] text-accent">QCI · PPID</p>
+          <h1 className="mt-2 font-display text-2xl font-medium tracking-tight">Sign in to CFC</h1>
+          <p className="mt-2 text-sm text-text-muted">
+            Use your @qcin.org email. We&apos;ll send a one-click sign-in link.
           </p>
-          <a
-            href={status.link}
-            className="break-all text-emerald-400 underline hover:text-emerald-300"
-          >
-            {status.link}
-          </a>
         </div>
-      )}
 
-      {status.kind === "error" && (
-        <p className="rounded-lg border border-red-800 bg-red-950/40 p-3 text-sm text-red-300">
-          {status.message}
-        </p>
-      )}
-    </main>
+        <form onSubmit={onSubmit} className="flex flex-col gap-3">
+          <input
+            type="email"
+            required
+            placeholder="you@qcin.org"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="rounded-lg border border-border-strong bg-surface-raised px-3 py-2 text-sm text-text outline-none transition-colors focus:border-accent focus:ring-2 focus:ring-focus-ring/30"
+          />
+          <button
+            type="submit"
+            disabled={status.kind === "sending"}
+            className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+          >
+            {status.kind === "sending" ? "Sending…" : "Send sign-in link"}
+          </button>
+        </form>
+
+        {status.kind === "sent-email" && (
+          <p className="rounded-lg border border-status-approved-border bg-status-approved-surface p-3 text-sm text-status-approved-text">
+            Check your inbox at {email} for a sign-in link. It expires in 15 minutes.
+          </p>
+        )}
+
+        {status.kind === "sent-dev-link" && (
+          <div className="rounded-lg border border-status-pending-l1-border bg-status-pending-l1-surface p-3 text-sm text-status-pending-l1-text">
+            <p className="mb-2">No email delivery configured yet — use this link to sign in:</p>
+            <a href={status.link} className="break-all font-medium underline">
+              {status.link}
+            </a>
+          </div>
+        )}
+
+        {status.kind === "error" && (
+          <p className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-3 text-sm text-status-rejected-text">
+            {status.message}
+          </p>
+        )}
+      </div>
+    </AuthShell>
   );
 }
