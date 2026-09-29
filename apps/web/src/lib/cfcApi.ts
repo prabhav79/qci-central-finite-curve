@@ -530,6 +530,23 @@ export async function recomputeGraph(persona: PersonaKey) {
   );
 }
 
+export type FlaggedDocument = {
+  doc_id: string;
+  title: string;
+  ministry: string | null;
+  division_code: string;
+  kind: string;
+  source_path: string;
+  injection_flag: number;
+};
+
+export async function getFlaggedDocuments(persona: PersonaKey) {
+  return apiGet<{ threshold: number; items: FlaggedDocument[] }>(
+    "/corpus/flagged",
+    persona,
+  );
+}
+
 export type GraphNodeType = "ministry" | "domain" | "document";
 
 export type GraphNode = {
@@ -589,6 +606,11 @@ export type AgentFrame =
   | { type: "draft_updated"; version: number; sha256: string; tracked: boolean }
   | { type: "section_start"; section: string; title: string }
   | { type: "section_result"; section: string; ok: boolean; error?: string | null }
+  | {
+      type: "faithfulness_flag";
+      section: string;
+      flags: { claim: string; score: number }[];
+    }
   | {
       type: "ready_to_generate";
       enriched_brief?: string;

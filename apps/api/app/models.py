@@ -215,6 +215,10 @@ class CorpusDocument(Base):
     # current docs backfilled to "successful"); real outcome tagging data
     # (CSV/folder convention) is a fast-follow once delivered.
     outcome: Mapped[Optional[str]] = mapped_column(String(16))
+    # 0..1 Jev "this reads like a prompt-injection attempt, not genuine
+    # institutional content" score (plan item 10) — None means unscreened
+    # (Jev unconfigured/failed at ingest time), never "confirmed safe".
+    injection_flag: Mapped[Optional[float]] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False

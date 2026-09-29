@@ -2,11 +2,13 @@
 
 import { useRef, useState } from "react";
 import {
+  type FlaggedDocument,
   type PersonaKey,
   uploadCorpusFile,
   uploadCorpusTemplate,
   reindexCorpus,
   getReindexStatus,
+  getFlaggedDocuments,
   reclassifyCorpus,
   recomputeGraph,
 } from "@/lib/cfcApi";
@@ -31,6 +33,7 @@ export function CorpusUploader({
   const [domain, setDomain] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
+  const [flagged, setFlagged] = useState<FlaggedDocument[] | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   function handleFiles(files: FileList | null) {
@@ -134,6 +137,24 @@ export function CorpusUploader({
     try {
       const r = await recomputeGraph(persona);
       setStatus(`Graph recomputed: ${r.edges_upserted} edge(s) across ${r.documents} document(s).`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onViewFlagged() {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await getFlaggedDocuments(persona);
+      setFlagged(r.items);
+      setStatus(
+        r.items.length === 0
+          ? `No documents flagged (threshold ${r.threshold}).`
+          : `${r.items.length} document(s) flagged for review.`,
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -259,6 +280,15 @@ export function CorpusUploader({
             >
               Recompute graph
             </button>
+            <button
+              type="button"
+              onClick={() => void onViewFlagged()}
+              disabled={busy}
+              className="rounded-md px-2 py-1 text-[10px] text-text-muted transition-colors hover:bg-surface-sunken hover:text-text disabled:opacity-50"
+              title="Documents Jev's injection screen flagged for review (never auto-excluded from retrieval)"
+            >
+              Flagged
+            </button>
           </>
         )}
       </div>
@@ -267,6 +297,24 @@ export function CorpusUploader({
         <p className="mt-1 whitespace-pre-wrap text-[10px] text-status-approved-text">{status}</p>
       )}
       {error && <p className="mt-1 text-[10px] text-status-rejected-text">{error}</p>}
+
+      {flagged && flagged.length > 0 && (
+        <ul className="mt-2 max-h-40 space-y-1 overflow-auto rounded-lg border border-status-changes-border bg-status-changes-surface/40 p-1.5">
+          {flagged.map((d) => (
+            <li key={d.doc_id} className="text-[10px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate font-mono text-text">{d.doc_id}</span>
+                <span className="shrink-0 text-status-changes-text">
+                  score {d.injection_flag.toFixed(2)}
+                </span>
+              </div>
+              <div className="truncate text-text-muted">
+                {d.title} · {d.division_code}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

@@ -23,6 +23,7 @@ type LogEntry =
   | { kind: "tool_result"; tool: string; ok: boolean; snippet: string; id: string }
   | { kind: "draft_updated"; version: number; tracked: boolean }
   | { kind: "section"; text: string; ok?: boolean }
+  | { kind: "faithfulness"; section: string; flags: { claim: string; score: number }[] }
   | { kind: "error"; text: string }
   | { kind: "done"; text: string };
 
@@ -213,6 +214,12 @@ export function AgentPanel({
                     ok: frame.ok,
                   },
                 ]);
+                break;
+              case "faithfulness_flag":
+                // Soft QA signal only — never blocks or edits anything, just
+                // surfaces claims the section made that didn't turn up in
+                // what was actually retrieved for it, for the human to check.
+                setLog((L) => [...L, { kind: "faithfulness", section: frame.section, flags: frame.flags }]);
                 break;
               case "ready_to_generate": {
                 const count = frame.key_docs?.length ?? 0;
@@ -509,6 +516,20 @@ export function AgentPanel({
                     <div className={entry.ok === false ? "text-status-rejected-text" : "text-agent"}>
                       <span className="mr-1 text-[9px] uppercase">section</span>
                       {entry.text}
+                    </div>
+                  )}
+                  {entry.kind === "faithfulness" && (
+                    <div className="rounded border border-status-changes-border bg-status-changes-surface/40 p-1">
+                      <div className="text-[9px] uppercase text-status-changes-text">
+                        possibly unsupported — {entry.section}
+                      </div>
+                      <ul className="mt-0.5 space-y-0.5">
+                        {entry.flags.map((f, fi) => (
+                          <li key={fi} className="text-text-muted">
+                            <span className="text-status-changes-text">[{f.score}]</span> &ldquo;{f.claim}&rdquo;
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                   {entry.kind === "done" && (

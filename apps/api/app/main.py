@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .agent_llm import LLMConfig, run_agent_with_fallback
 from . import auth as auth_mod
+from . import jev_faithfulness
 from .agent_presets import (
     GENERATION_SECTIONS,
     TEMPLATE_CATALOG,
@@ -1925,6 +1926,11 @@ def agent_chat(
                 for section_label, section_title in outline:
                     yield _sse({"type": "section_start", "section": section_label, "title": section_title})
                     section_error: str | None = None
+                    # Captured purely to feed the post-section faithfulness
+                    # check (item 9) below — never used to alter what gets
+                    # written to the draft itself.
+                    section_generated_text = ""
+                    section_evidence_parts: list[str] = []
                     for frame in run_agent_with_fallback(
                         configs=configs,
                         system_prompt=draft_generator_system(section_title),
@@ -1938,11 +1944,30 @@ def agent_chat(
                             continue  # per-section "done" is noise; only the overall loop emits one
                         if frame["type"] == "error":
                             section_error = frame.get("message")
+                        if frame["type"] == "tool_call" and frame.get("name") == "cfc_propose_insert":
+                            section_generated_text = str(frame.get("args", {}).get("text") or "")
+                        if frame["type"] == "tool_result":
+                            result = frame.get("result") or {}
+                            if frame.get("name") == "cfc_search_corpus":
+                                for hit in result.get("hits") or []:
+                                    if hit.get("text"):
+                                        section_evidence_parts.append(str(hit["text"]))
+                            elif frame.get("name") == "cfc_get_document":
+                                if result.get("full_text"):
+                                    section_evidence_parts.append(str(result["full_text"])[:4000])
                         yield _sse(frame)
                     if section_error:
                         failed.append(section_label)
                     else:
                         generated.append(section_label)
+                        if section_generated_text and section_evidence_parts:
+                            flags = jev_faithfulness.check_section(
+                                section_generated_text, "\n\n".join(section_evidence_parts)
+                            )
+                            if flags:
+                                yield _sse(
+                                    {"type": "faithfulness_flag", "section": section_label, "flags": flags}
+                                )
                     yield _sse({"type": "section_result", "section": section_label, "ok": not section_error, "error": section_error})
                 yield _sse(
                     {
@@ -2170,6 +2195,47 @@ def corpus_reclassify(
     )
     s.commit()
     return {"ok": True, **result}
+
+
+_INJECTION_FLAG_THRESHOLD = 0.5
+
+
+@app.get("/corpus/flagged")
+def corpus_flagged(
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Admin: documents Jev's injection screen (item 10) scored at or above
+    threshold — surfaced for a human to review, never silently excluded
+    from retrieval. A flagged document staying in cfc_search_corpus/
+    cfc_get_document results is a deliberate choice: a false positive
+    should never make a legitimate document invisible.
+    """
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin only")
+    rows = s.execute(
+        select(CorpusDocument)
+        .where(CorpusDocument.injection_flag.is_not(None))
+        .where(CorpusDocument.injection_flag >= _INJECTION_FLAG_THRESHOLD)
+        .order_by(CorpusDocument.injection_flag.desc())
+    ).scalars().all()
+    return {
+        "threshold": _INJECTION_FLAG_THRESHOLD,
+        "items": [
+            {
+                "doc_id": d.doc_id,
+                "title": d.title,
+                "ministry": d.ministry,
+                "division_code": d.division_code,
+                "kind": d.kind,
+                "source_path": d.source_path,
+                "injection_flag": d.injection_flag,
+            }
+            for d in rows
+        ],
+    }
 
 
 @app.get("/corpus/graph/children")
