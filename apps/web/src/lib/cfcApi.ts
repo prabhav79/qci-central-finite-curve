@@ -235,31 +235,6 @@ export async function listGenerationTemplates(persona: PersonaKey) {
   return apiGet<{ items: GenerationTemplate[] }>("/generation/templates", persona);
 }
 
-export async function createDraftFromWorker(
-  persona: PersonaKey,
-  opts?: {
-    title?: string;
-    find?: string;
-    replace?: string;
-    tracked?: boolean;
-  },
-) {
-  return apiJson<{
-    draft: DraftRecord;
-    session: DraftSession;
-    worker: Record<string, unknown>;
-  }>("/drafts/from-worker", persona, {
-    method: "POST",
-    body: JSON.stringify({
-      title: opts?.title ?? "CPGRAMS PMU Extension — Worker Seeded",
-      find: opts?.find ?? "Quality Council of India",
-      replace:
-        opts?.replace ?? "Quality Council of India (CFC Generated Draft)",
-      tracked: opts?.tracked ?? true,
-    }),
-  });
-}
-
 export async function listDrafts(persona: PersonaKey) {
   return apiGet<{ items: Array<{ draft: DraftRecord; session: DraftSession }> }>(
     "/drafts",

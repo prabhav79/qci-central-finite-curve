@@ -22,7 +22,6 @@ import {
   apiGet,
   apiJson,
   createDraft,
-  createDraftFromWorker,
   decideDraft,
   fetchDraftFile,
   getCurrentUser,
@@ -237,29 +236,6 @@ export function DocumentStudio({
       setError(e instanceof Error ? e.message : String(e));
       throw e;
     } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onCreateFromWorker() {
-    setBusy(true);
-    setError(null);
-    setStatusMsg("Seeding DOCX via doc-worker (SuperDoc SDK)…");
-    try {
-      const res = await createDraftFromWorker(persona, {
-        title: "CPGRAMS PMU Extension — Worker Seeded",
-        replace: "Quality Council of India (CFC Generated Draft)",
-      });
-      const note = res.worker?.replaced
-        ? "worker replaced text"
-        : res.worker?.fallback
-          ? `worker fallback: ${String(res.worker?.warning || "")}`
-          : "worker seed complete";
-      setStatusMsg(`Worker draft created (${note})`);
-      await loadDraft(res.draft.id, persona);
-      await refreshHealth();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
     }
   }
@@ -496,15 +472,6 @@ export function DocumentStudio({
         </button>
         <button
           type="button"
-          disabled={busy}
-          onClick={() => void onCreateFromWorker()}
-          className="rounded-lg bg-agent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-agent-hover disabled:opacity-50"
-          title="Requires npm run dev:doc-worker"
-        >
-          Generate via worker
-        </button>
-        <button
-          type="button"
           disabled={busy || !session?.can_save || !ready}
           onClick={() => void onSave()}
           className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
@@ -675,7 +642,7 @@ export function DocumentStudio({
           ) : (
             <div className="flex h-[480px] flex-col items-center justify-center gap-2 text-sm text-text-muted">
               <p>No document loaded.</p>
-              <p className="text-xs">New draft · Generate via worker · or open a draft id</p>
+              <p className="text-xs">New draft · or open a draft id</p>
             </div>
           )}
         </section>
