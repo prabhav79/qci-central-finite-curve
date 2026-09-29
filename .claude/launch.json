@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:api"],
       "port": 8000
+    },
+    {
+      "name": "cfc-doc-worker",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:doc-worker"],
+      "port": 8100
     }
   ]
 }

@@ -48,21 +48,6 @@ export default function Home() {
           Institutional RAG · Org RBAC · Versioned SuperDoc governance
         </div>
       </div>
-
-      <section className="mx-auto max-w-3xl px-6 py-12">
-        <div className="rounded-xl border border-border bg-surface-raised p-5 animate-rise-in [animation-delay:240ms]">
-          <p className="text-xs font-medium uppercase tracking-wide text-text-muted">Getting started</p>
-          <ol className="mt-3 list-decimal space-y-1.5 pl-5 text-sm text-text-muted">
-            <li>
-              Start API: <code className="rounded bg-surface-sunken px-1.5 py-0.5 font-mono text-text">npm run dev:api</code>
-            </li>
-            <li>
-              Start web: <code className="rounded bg-surface-sunken px-1.5 py-0.5 font-mono text-text">npm run dev:web</code>
-            </li>
-            <li>In Studio: New draft → describe what you need → review → Submit L1 → L1 Approve → L2 Final</li>
-          </ol>
-        </div>
-      </section>
     </main>
   );
 }

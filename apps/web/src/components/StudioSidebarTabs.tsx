@@ -48,16 +48,16 @@ export function StudioSidebarTabs({
 
   return (
     <div>
-      <div className="mb-2 flex flex-wrap gap-1 text-[11px]">
+      <div className="mb-3 flex gap-1 rounded-lg bg-surface-sunken p-1 text-xs">
         {TABS.map((t) => (
           <button
             key={t.key}
             type="button"
             onClick={() => setActive(t.key)}
-            className={`rounded-md px-2 py-1 font-medium transition-colors ${
+            className={`min-w-0 flex-1 rounded-md px-1.5 py-2 font-medium transition-colors ${
               active === t.key
-                ? "bg-accent text-white"
-                : "bg-surface-sunken text-text-muted hover:text-text"
+                ? "bg-accent text-white shadow-sm"
+                : "text-text-muted hover:bg-surface-raised hover:text-text"
             }`}
           >
             {t.label}

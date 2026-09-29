@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -247,11 +248,63 @@ class ToolError(Exception):
     """Recoverable tool failure — surfaced to the LLM so it can adjust."""
 
 
+_MD_EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*")
+_MD_HEADING_RE = re.compile(r"^(#{1,3})\s+(.*)$")
+_MD_BULLET_RE = re.compile(r"^[-*]\s+(.*)$")
+_MD_NUMBERED_RE = re.compile(r"^\d+\.\s+(.*)$")
+
+
+def _add_markdown_runs(paragraph: Any, text: str) -> None:
+    """Split on **bold**/*italic* spans, adding each as its own run so
+    emphasis survives as real DOCX formatting instead of literal asterisks.
+    The alternation tries the double-star (bold) branch first at each
+    position, so **x** is never misread as two italic markers."""
+    pos = 0
+    for m in _MD_EMPHASIS_RE.finditer(text):
+        if m.start() > pos:
+            paragraph.add_run(text[pos : m.start()])
+        if m.group(1) is not None:
+            paragraph.add_run(m.group(1)).bold = True
+        else:
+            paragraph.add_run(m.group(2)).italic = True
+        pos = m.end()
+    if pos < len(text) or pos == 0:
+        paragraph.add_run(text[pos:])
+
+
+def _add_markdown_line(doc: Any, line: str) -> None:
+    """Translate one line of the model's markdown-flavored output into a
+    real DOCX paragraph — heading levels, bullet/numbered lists, and inline
+    bold — falling back to a plain paragraph for anything else or if the
+    template lacks the matching built-in style."""
+    stripped = line.strip()
+    heading = _MD_HEADING_RE.match(stripped)
+    bullet = _MD_BULLET_RE.match(stripped)
+    numbered = _MD_NUMBERED_RE.match(stripped)
+    style, body = (
+        (f"Heading {len(heading.group(1))}", heading.group(2))
+        if heading
+        else ("List Bullet", bullet.group(1))
+        if bullet
+        else ("List Number", numbered.group(1))
+        if numbered
+        else (None, line)
+    )
+    try:
+        paragraph = doc.add_paragraph(style=style) if style else doc.add_paragraph()
+    except KeyError:
+        paragraph = doc.add_paragraph()  # template has no such style — degrade gracefully
+    _add_markdown_runs(paragraph, body)
+
+
 def _python_docx_append(src: Path, dst: Path, blocks: list[str]) -> None:
     """Reliable insert-at-end path: copy source, then append paragraphs via python-docx.
 
     Used only when the SuperDoc SDK rejects the mutate op — keeps the agent
     demo unblocked without needing tracked-change support in the SDK path.
+    Parses the small markdown subset the model actually produces (bold,
+    headings, bullet/numbered lists) into real formatting rather than
+    inserting the literal **/#/- characters verbatim.
     """
     import shutil as _shutil
 
@@ -261,7 +314,7 @@ def _python_docx_append(src: Path, dst: Path, blocks: list[str]) -> None:
     d = docx.Document(str(dst))
     for block in blocks:
         for line in (block or "").split("\n"):
-            d.add_paragraph(line)
+            _add_markdown_line(d, line)
     d.save(str(dst))
 
 

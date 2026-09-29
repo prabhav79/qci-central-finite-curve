@@ -712,6 +712,10 @@ export type CurrentUser = {
   cfc_role: string;
   division_code?: string | null;
   is_admin?: boolean;
+  /** "personas" (X-CFC-User header still drives identity — dev/demo mode)
+   * or "magic-link" (only the real session cookie counts, header ignored).
+   * The persona switcher only means anything in "personas" mode. */
+  auth_mode?: string;
 };
 
 export async function requestMagicLink(

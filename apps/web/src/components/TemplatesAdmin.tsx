@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PERSONAS,
+  type CurrentUser,
   type PersonaKey,
   type TemplateItem,
+  getCurrentUser,
   listTemplates,
   uploadCorpusTemplate,
 } from "@/lib/cfcApi";
@@ -24,7 +26,14 @@ export function TemplatesAdmin() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const isAdmin = persona === "admin";
+  const [me, setMe] = useState<CurrentUser | null>(null);
+  useEffect(() => {
+    void getCurrentUser().then(setMe);
+  }, []);
+  // In personas (dev/demo) mode the dropdown IS the identity, so honor its
+  // pick; once magic-link is the real auth path, admin status must come
+  // from the real signed-in user, not a client-side dropdown default.
+  const isAdmin = me?.auth_mode === "personas" ? persona === "admin" : Boolean(me?.is_admin);
 
   const load = useCallback(
     async (p: PersonaKey = persona) => {
@@ -74,22 +83,24 @@ export function TemplatesAdmin() {
       <header className="flex flex-wrap items-baseline gap-3">
         <h1 className="text-xl font-semibold">Template library</h1>
         <p className="text-xs text-text-muted">
-          DOCX substrates makers pick from when creating a new draft. Admin persona to upload.
+          DOCX substrates makers pick from when creating a new draft. Admin access required to upload.
         </p>
-        <label className="ml-auto text-xs text-text-muted">
-          Persona
-          <select
-            className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
-            value={persona}
-            onChange={(e) => setPersona(e.target.value as PersonaKey)}
-          >
-            {Object.entries(PERSONAS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {me?.auth_mode === "personas" && (
+          <label className="ml-auto text-xs text-text-muted">
+            Persona
+            <select
+              className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
+              value={persona}
+              onChange={(e) => setPersona(e.target.value as PersonaKey)}
+            >
+              {Object.entries(PERSONAS).map(([k, v]) => (
+                <option key={k} value={k}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </header>
 
       {error && (

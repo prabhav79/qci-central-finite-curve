@@ -282,9 +282,23 @@ app.post("/internal/docx/mutate", async (req, res) => {
             note = "no match for pattern";
           }
         } else if (op.kind === "insert_end") {
-          // The SDK's doc.insert() requires target.kind (not target.type).
-          // We try a few shapes to be robust across minor SDK versions.
+          // Preferred: doc.insert's own markdown parser (type: "markdown")
+          // turns the model's **bold**/# heading/- bullet syntax into real
+          // DOCX formatting instead of literal asterisks/hashes — see
+          // node_modules/@superdoc-dev/sdk/tools/system-prompt.md's "Insert
+          // content into a document" section. Omitting `target` appends at
+          // the document's end per that same doc — confirmed working
+          // against a template with existing content; a genuinely empty
+          // document (no blocks at all, e.g. BLANK.docx before any content
+          // exists) has no implicit end position and throws "No default
+          // insertion point available", which falls through to the
+          // fallback shapes below (all confirmed to fail schema validation
+          // against the installed SDK version — kept only in case a future
+          // SDK version resurrects one of these older shapes) and from
+          // there to agent_tools.py's python-docx append, which is where a
+          // brand-new BLANK-seeded draft's first insert actually lands.
           const insertAttempts: Array<() => Promise<unknown>> = [
+            () => (doc as any).insert({ type: "markdown", value: op.text }),
             () => (doc as any).insert({ target: { kind: "body-end" }, content: { text: op.text } }),
             () => (doc as any).insert({ target: { kind: "document-end" }, content: op.text }),
             () => (doc as any).insert({ target: { kind: "end" }, content: op.text }),
@@ -304,7 +318,11 @@ app.post("/internal/docx/mutate", async (req, res) => {
           let lastErr = "";
           for (const attempt of insertAttempts) {
             try {
-              await attempt();
+              const r: any = await attempt();
+              if (r?.receipt && r.receipt.success === false) {
+                lastErr = r.receipt.failure?.message || "receipt reported failure";
+                continue;
+              }
               ok = true;
               break;
             } catch (e) {
@@ -318,10 +336,18 @@ app.post("/internal/docx/mutate", async (req, res) => {
             require: "first",
           });
           const ref = match?.items?.[0]?.handle?.ref;
-          const target = match?.items?.[0]?.target;
+          // `.address` (a block-kind locator) is what doc.insert's `target`
+          // accepts for placement-relative inserts — `.target` is a
+          // text-range selection (built for replace/delete over a span) and
+          // fails insert with INVALID_TARGET ("require a collapsed target
+          // range") despite resolving without throwing, which is why the
+          // receipt-success check below matters as much as the try/catch.
+          const address = match?.items?.[0]?.address;
+          const legacyTarget = match?.items?.[0]?.target;
           const afterAttempts: Array<() => Promise<unknown>> = [
-            () => target && (doc as any).insertAfter({ target, content: { text: op.text } }),
-            () => target && (doc as any).insertAfter({ target, content: op.text }),
+            () => address && (doc as any).insert({ type: "markdown", target: address, placement: "after", value: op.text }),
+            () => legacyTarget && (doc as any).insertAfter({ target: legacyTarget, content: { text: op.text } }),
+            () => legacyTarget && (doc as any).insertAfter({ target: legacyTarget, content: op.text }),
             () =>
               ref &&
               (doc as any).mutations.apply({
@@ -340,8 +366,12 @@ app.post("/internal/docx/mutate", async (req, res) => {
           let lastErr = "";
           for (const attempt of afterAttempts) {
             try {
-              const r = await attempt();
-              if (r === undefined && !target && !ref) continue;
+              const r: any = await attempt();
+              if (r === undefined) continue; // guard clause short-circuited (no anchor for this shape)
+              if (r?.receipt && r.receipt.success === false) {
+                lastErr = r.receipt.failure?.message || "receipt reported failure";
+                continue;
+              }
               ok = true;
               break;
             } catch (e) {

@@ -10,6 +10,7 @@ import { AgentPanel } from "@/components/AgentPanel";
 import { DecisionModal, type DecisionKind } from "@/components/DecisionModal";
 import { NewDraftModal, type GenerationProviderChoice, type TemplateChoice } from "@/components/NewDraftModal";
 import { StudioSidebarTabs } from "@/components/StudioSidebarTabs";
+import { StatusPill } from "@/components/StatusPill";
 import {
   PERSONAS,
   type PersonaKey,
@@ -469,6 +470,7 @@ export function DocumentStudio({
             </button>
           </div>
         )}
+        {me?.auth_mode === "personas" && (
         <label className="text-xs text-text-muted">
           Persona (dev)
           <select
@@ -483,6 +485,7 @@ export function DocumentStudio({
             ))}
           </select>
         </label>
+        )}
         <button
           type="button"
           disabled={busy}
@@ -711,41 +714,29 @@ export function DocumentStudio({
                   </button>
                 </div>
 
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-text-muted">Workflow</div>
-                  <dl className="mt-2 space-y-1 text-text">
-                    <div className="flex justify-between gap-2">
-                      <dt>Draft</dt>
-                      <dd className="font-mono text-xs">{draftId ?? "—"}</dd>
+                {draftId && (
+                  <div className="rounded-lg border border-border bg-surface-sunken p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="truncate text-sm font-medium text-text">
+                        {draftMeta?.title || "Untitled draft"}
+                      </span>
+                      {session?.status && <StatusPill status={session.status} />}
                     </div>
-                    <div className="flex justify-between gap-2">
-                      <dt>Title</dt>
-                      <dd className="truncate text-xs">{draftMeta?.title ?? "—"}</dd>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-muted">
+                      <span className="font-mono">{draftId}</span>
+                      {versions && versions.length > 0 && (
+                        <span>
+                          · {versions.length} revision{versions.length === 1 ? "" : "s"}
+                        </span>
+                      )}
+                      {dirty && (
+                        <span className="rounded-full bg-status-pending-l1-surface px-1.5 py-0.5 text-[10px] font-medium text-status-pending-l1-text">
+                          Unsaved changes
+                        </span>
+                      )}
                     </div>
-                    <div className="flex justify-between gap-2">
-                      <dt>Status</dt>
-                      <dd>{session?.status ?? "—"}</dd>
-                    </div>
-                    <div className="flex justify-between gap-2">
-                      <dt>Version</dt>
-                      <dd>{session?.version ?? "—"}</dd>
-                    </div>
-                    <div className="flex justify-between gap-2">
-                      <dt>Mode</dt>
-                      <dd>
-                        {session?.document_mode ?? "—"} / {session?.superdoc_role ?? "—"}
-                      </dd>
-                    </div>
-                    <div className="flex justify-between gap-2">
-                      <dt>Dirty</dt>
-                      <dd>{dirty ? "unsaved" : "clean"}</dd>
-                    </div>
-                    <div className="flex justify-between gap-2">
-                      <dt>Editor</dt>
-                      <dd>{ready ? "ready" : file ? "loading" : "idle"}</dd>
-                    </div>
-                  </dl>
-                </div>
+                  </div>
+                )}
 
                 <div>
                   <div className="mb-1 flex items-center justify-between text-xs uppercase tracking-wide text-text-muted">
@@ -843,13 +834,6 @@ export function DocumentStudio({
               />
             }
           />
-
-          <div className="text-[11px] text-text-muted">
-            Demo path: Arpit generates → edit/save → Submit L1 → switch Aashna → L1
-            Approve → Subroto → L2 Final.
-            <br />
-            Worker button needs <code className="text-text">npm run dev:doc-worker</code>.
-          </div>
         </aside>
       </div>
     </div>

@@ -6,9 +6,11 @@ import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PERSONAS,
+  type CurrentUser,
   type GraphNode,
   type GraphPreviewResponse,
   type PersonaKey,
+  getCurrentUser,
   getGraphChildren,
   getGraphPreview,
 } from "@/lib/cfcApi";
@@ -106,6 +108,10 @@ type PreviewState =
  */
 export function KnowledgeGraph() {
   const [persona, setPersona] = useState<PersonaKey>("arpit");
+  const [me, setMe] = useState<CurrentUser | null>(null);
+  useEffect(() => {
+    void getCurrentUser().then(setMe);
+  }, []);
   const { resolvedTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
   const nodeColor = isDark ? NODE_COLOR_DARK : NODE_COLOR_LIGHT;
@@ -285,20 +291,22 @@ export function KnowledgeGraph() {
           >
             Reset
           </button>
-          <label className="text-xs text-text-muted">
-            Persona
-            <select
-              className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
-              value={persona}
-              onChange={(e) => setPersona(e.target.value as PersonaKey)}
-            >
-              {Object.entries(PERSONAS).map(([k, v]) => (
-                <option key={k} value={k}>
-                  {v.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          {me?.auth_mode === "personas" && (
+            <label className="text-xs text-text-muted">
+              Persona
+              <select
+                className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
+                value={persona}
+                onChange={(e) => setPersona(e.target.value as PersonaKey)}
+              >
+                {Object.entries(PERSONAS).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </header>
 

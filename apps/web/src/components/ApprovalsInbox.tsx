@@ -4,36 +4,14 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   PERSONAS,
+  type CurrentUser,
   type InboxItem,
   type PersonaKey,
   fetchApprovalsInbox,
+  getCurrentUser,
 } from "@/lib/cfcApi";
 import { EmptyState } from "@/components/EmptyState";
-
-function StatusPill({ status }: { status: string }) {
-  const tone: Record<string, string> = {
-    DRAFT: "bg-status-draft-surface text-status-draft-text",
-    PENDING_L1_REVIEW:
-      "bg-status-pending-l1-surface text-status-pending-l1-text border border-status-pending-l1-border",
-    APPROVED_L1_PENDING_L2:
-      "bg-status-pending-l2-surface text-status-pending-l2-text border border-status-pending-l2-border",
-    FINAL_APPROVED:
-      "bg-status-approved-surface text-status-approved-text border border-status-approved-border",
-    REJECTED:
-      "bg-status-rejected-surface text-status-rejected-text border border-status-rejected-border",
-    CHANGES_REQUESTED:
-      "bg-status-changes-surface text-status-changes-text border border-status-changes-border",
-  };
-  return (
-    <span
-      className={`rounded px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
-        tone[status] ?? "bg-status-draft-surface text-status-draft-text"
-      }`}
-    >
-      {status.replace(/_/g, " ")}
-    </span>
-  );
-}
+import { StatusPill } from "@/components/StatusPill";
 
 function InboxRow({ item, persona }: { item: InboxItem; persona: PersonaKey }) {
   const draft = item.draft;
@@ -112,6 +90,11 @@ export function ApprovalsInbox() {
     void load(persona);
   }, [persona, load]);
 
+  const [me, setMe] = useState<CurrentUser | null>(null);
+  useEffect(() => {
+    void getCurrentUser().then(setMe);
+  }, []);
+
   const l1 = useMemo(() => items.filter((i) => i.session.can_decide_l1), [items]);
   const l2 = useMemo(() => items.filter((i) => i.session.can_decide_l2), [items]);
 
@@ -122,28 +105,32 @@ export function ApprovalsInbox() {
         <p className="text-xs text-text-muted">
           Drafts awaiting your L1 or L2 decision. Silo-scoped to your division; SG / Admin see all boards.
         </p>
-        <label className="ml-auto text-xs text-text-muted">
-          Persona
-          <select
-            className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
-            value={persona}
-            onChange={(e) => setPersona(e.target.value as PersonaKey)}
+        <div className="ml-auto flex items-center gap-2">
+          {me?.auth_mode === "personas" && (
+            <label className="text-xs text-text-muted">
+              Persona
+              <select
+                className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
+                value={persona}
+                onChange={(e) => setPersona(e.target.value as PersonaKey)}
+              >
+                {Object.entries(PERSONAS).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button
+            type="button"
+            onClick={() => void load(persona)}
+            disabled={busy}
+            className="rounded-lg border border-border-strong px-3 py-1 text-xs text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
           >
-            {Object.entries(PERSONAS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <button
-          type="button"
-          onClick={() => void load(persona)}
-          disabled={busy}
-          className="rounded-lg border border-border-strong px-3 py-1 text-xs text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
-        >
-          {busy ? "Loading…" : "Refresh"}
-        </button>
+            {busy ? "Loading…" : "Refresh"}
+          </button>
+        </div>
       </header>
 
       {error && (
