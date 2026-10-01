@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { Modal } from "@/components/Modal";
 
 export type DecisionKind = "reject" | "changes_requested";
 
@@ -37,7 +38,10 @@ export function DecisionModal({
 
   const title = kind === "reject" ? `Reject at L${level}` : `Request changes at L${level}`;
   const verb = kind === "reject" ? "Reject" : "Send back";
-  const tone = kind === "reject" ? "bg-red-600 hover:bg-red-500" : "bg-orange-600 hover:bg-orange-500";
+  const tone =
+    kind === "reject"
+      ? "bg-action-reject hover:bg-action-reject-hover"
+      : "bg-action-changes hover:bg-action-changes-hover";
 
   async function submit() {
     const trimmed = comment.trim();
@@ -54,59 +58,53 @@ export function DecisionModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-950 p-4 shadow-xl">
-        <div className="mb-1 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-zinc-100">{title}</h2>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-xs text-zinc-500 hover:text-zinc-200"
-          >
-            Esc
-          </button>
-        </div>
-        <p className="mb-3 text-xs text-zinc-500">
-          This reason is stored as a review thread on the draft. The maker will see it in Threads and
-          the audit log. Approvals cannot be undone; be specific.
-        </p>
-        {defaultAnchorText && (
-          <p className="mb-2 truncate rounded border border-zinc-800 bg-zinc-900 px-2 py-1 text-[11px] text-zinc-400">
-            Anchor context: {defaultAnchorText}
-          </p>
-        )}
-        <textarea
-          ref={ref}
-          value={comment}
-          onChange={(e) => setComment(e.target.value)}
-          rows={6}
-          placeholder={
-            kind === "reject"
-              ? "Why is this draft being rejected? What must change before another submission?"
-              : "What changes do you want the maker to make before resubmitting?"
-          }
-          className="w-full rounded border border-zinc-700 bg-zinc-900 p-2 text-sm text-zinc-100 focus:border-blue-500 focus:outline-none"
-        />
-        {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
-        <div className="mt-3 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={busy}
-            className="rounded border border-zinc-600 px-3 py-1.5 text-xs hover:bg-zinc-800 disabled:opacity-50"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => void submit()}
-            disabled={busy}
-            className={`rounded px-3 py-1.5 text-xs font-medium text-white ${tone} disabled:opacity-50`}
-          >
-            {busy ? "Sending…" : verb}
-          </button>
-        </div>
+    <Modal open={open} onClose={onCancel}>
+      <div className="mb-1 flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-text">{title}</h2>
+        <button type="button" onClick={onCancel} className="text-xs text-text-muted hover:text-text">
+          Esc
+        </button>
       </div>
-    </div>
+      <p className="mb-3 text-xs text-text-muted">
+        This reason is stored as a review thread on the draft. The maker will see it in Threads and
+        the audit log. Approvals cannot be undone; be specific.
+      </p>
+      {defaultAnchorText && (
+        <p className="mb-2 truncate rounded-lg border border-border bg-surface-sunken px-2 py-1 text-[11px] text-text-muted">
+          Anchor context: {defaultAnchorText}
+        </p>
+      )}
+      <textarea
+        ref={ref}
+        value={comment}
+        onChange={(e) => setComment(e.target.value)}
+        rows={6}
+        placeholder={
+          kind === "reject"
+            ? "Why is this draft being rejected? What must change before another submission?"
+            : "What changes do you want the maker to make before resubmitting?"
+        }
+        className="w-full rounded-lg border border-border-strong bg-surface-sunken p-2 text-sm text-text outline-none focus:border-accent"
+      />
+      {error && <p className="mt-2 text-xs text-status-rejected-text">{error}</p>}
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={busy}
+          className="rounded-lg border border-border-strong px-3 py-1.5 text-xs text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => void submit()}
+          disabled={busy}
+          className={`rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors ${tone} disabled:opacity-50`}
+        >
+          {busy ? "Sending…" : verb}
+        </button>
+      </div>
+    </Modal>
   );
 }

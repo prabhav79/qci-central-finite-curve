@@ -599,7 +599,7 @@ export async function getGraphPreview(persona: PersonaKey, docId: string) {
 
 export type AgentFrame =
   | { type: "start"; draft_id: string; version: number; providers: string[]; tracked: boolean; can_run_agent_mutate: boolean }
-  | { type: "preset"; name: string }
+  | { type: "preset"; name: string; max_turns?: number }
   | { type: "token"; text: string }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; id: string; name: string; result: Record<string, unknown> }

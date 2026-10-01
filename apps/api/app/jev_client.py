@@ -46,15 +46,21 @@ def _api_key() -> str:
     return key
 
 
-def evaluate(state: str, questions: dict[str, dict]) -> dict[str, dict]:
+def evaluate(state: str, questions: dict[str, dict], timeout: float | None = None) -> dict[str, dict]:
     """POST one batched /v1/systemone call and return the raw `answers` dict.
 
     Batch everything into ONE call — the whole point of Jev's pricing/speed
     is that N questions in one request cost roughly the same as one question
     (TypeSafe's own numbers: ~10-12x cheaper/faster batched vs N separate
     calls). Raises on any HTTP/parse failure; callers decide the fallback.
+
+    `timeout` overrides the module default (TYPESAFE_TIMEOUT_SEC, 15s) for
+    call sites sitting directly in front of a latency-sensitive wait — e.g.
+    jev_intake's gap check runs before the user even sees the next question,
+    unlike jev_faithfulness's post-hoc check which is amortized against a
+    wait the user already expects.
     """
-    with httpx.Client(timeout=TIMEOUT_SEC) as client:
+    with httpx.Client(timeout=timeout if timeout is not None else TIMEOUT_SEC) as client:
         resp = client.post(
             TYPESAFE_URL,
             headers={

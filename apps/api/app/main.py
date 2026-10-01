@@ -38,8 +38,10 @@ from sqlalchemy.orm import Session, selectinload
 from .agent_llm import LLMConfig, run_agent_with_fallback
 from . import auth as auth_mod
 from . import jev_faithfulness
+from . import jev_intake
 from .agent_presets import (
     GENERATION_SECTIONS,
+    MAX_INTAKE_TURNS,
     TEMPLATE_CATALOG,
     draft_generator_system,
     draft_generator_user,
@@ -1984,15 +1986,20 @@ def agent_chat(
                 # agent_presets.draft_intake_system for why the first tool call
                 # must be a corpus search (questions grounded in what QCI has
                 # actually done, not generic proposal-writing boilerplate).
-                yield _sse({"type": "preset", "name": "draft_intake"})
+                yield _sse({"type": "preset", "name": "draft_intake", "max_turns": MAX_INTAKE_TURNS})
                 yield _sse(start_frame)
                 brief = str(preset_args.get("brief") or body.prompt or "")
                 transcript = preset_args.get("transcript") or []
                 turn_count = int(preset_args.get("turn_count") or 1)
+                # Server-side stop, not just the prompt's own "{max_turns}" text —
+                # turn_count is client-supplied and nothing previously checked it
+                # at all (see agent_presets.draft_intake_system's force_final doc).
+                force_final = turn_count >= MAX_INTAKE_TURNS
+                gaps = [] if force_final else jev_intake.detect_gaps(draft.title or "", brief, transcript)
                 for frame in run_agent_with_fallback(
                     configs=configs,
-                    system_prompt=draft_intake_system(),
-                    user_prompt=draft_intake_user(brief, transcript, turn_count),
+                    system_prompt=draft_intake_system(force_final=force_final),
+                    user_prompt=draft_intake_user(brief, transcript, turn_count, title=draft.title or "", gaps=gaps),
                     tool_schemas=INTAKE_TOOL_SCHEMAS,
                     tool_dispatch=dispatch,
                 ):

@@ -9,6 +9,7 @@ import { CorpusUploader } from "@/components/CorpusUploader";
 import { AgentPanel } from "@/components/AgentPanel";
 import { DecisionModal, type DecisionKind } from "@/components/DecisionModal";
 import { NewDraftModal, type GenerationProviderChoice, type TemplateChoice } from "@/components/NewDraftModal";
+import { DraftIntakeOverlay } from "@/components/DraftIntakeOverlay";
 import { StudioSidebarTabs } from "@/components/StudioSidebarTabs";
 import { StatusPill } from "@/components/StatusPill";
 import {
@@ -66,6 +67,16 @@ export function DocumentStudio({
     | null
   >(null);
   const [newDraftOpen, setNewDraftOpen] = useState(false);
+  // The clarifying-questions Q&A (draft_intake) now runs entirely in its own
+  // centered overlay rather than inline inside AgentPanel — this is the
+  // overlay's full input state; it's gone once intake completes or the user
+  // abandons it, at which point pendingGeneration below takes over.
+  const [intakeState, setIntakeState] = useState<{
+    draftId: string;
+    title: string;
+    brief: string;
+    providerChoice: GenerationProviderChoice;
+  } | null>(null);
   const [pendingGeneration, setPendingGeneration] = useState<{
     preset: string;
     prompt: string;
@@ -221,16 +232,16 @@ export function DocumentStudio({
       setNewDraftOpen(false);
       await loadDraft(res.draft.id, persona);
       if (brief.trim()) {
-        // draft_intake asks grounding questions first, then hands off to
-        // draft_generator itself once ready — see AgentPanel's intake phase.
-        setPendingGeneration({
-          preset: "draft_intake",
-          prompt: brief.trim(),
-          provider: generationProvider.provider,
-          apiKey: generationProvider.apiKey,
-          model: generationProvider.model,
-        });
+        // Generate tab is focused immediately so it's already active
+        // underneath once DraftIntakeOverlay's Q&A finishes and hands off
+        // to draft_generator via onIntakeComplete below.
         setFocusGenerateSignal((n) => n + 1);
+        setIntakeState({
+          draftId: res.draft.id,
+          title,
+          brief: brief.trim(),
+          providerChoice: generationProvider,
+        });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -575,6 +586,30 @@ export function DocumentStudio({
         onCancel={() => setNewDraftOpen(false)}
         onConfirm={(title, brief, template, generationProvider) => onCreate(title, brief, template, generationProvider)}
       />
+
+      {intakeState && (
+        <DraftIntakeOverlay
+          key={intakeState.draftId}
+          open={true}
+          draftId={intakeState.draftId}
+          title={intakeState.title}
+          brief={intakeState.brief}
+          providerChoice={intakeState.providerChoice}
+          persona={persona}
+          onComplete={(enrichedBrief) => {
+            const { providerChoice } = intakeState;
+            setIntakeState(null);
+            setPendingGeneration({
+              preset: "draft_generator",
+              prompt: enrichedBrief,
+              provider: providerChoice.provider,
+              apiKey: providerChoice.apiKey,
+              model: providerChoice.model,
+            });
+          }}
+          onAbandon={() => setIntakeState(null)}
+        />
+      )}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1fr_340px]">
         <section className="min-h-0 overflow-auto rounded-xl border border-border bg-surface-raised">

@@ -284,7 +284,7 @@ def draft_generator_user(
 # every section independently guess its own retrieval query off one sentence.
 # --------------------------------------------------------------------------- #
 
-MAX_INTAKE_TURNS = 4
+MAX_INTAKE_TURNS = 6
 
 DRAFT_INTAKE_SYSTEM_TEMPLATE = """You are the CFC Draft Intake assistant — embedded inside a SuperDoc
 editor at Quality Council of India (QCI), helping someone scope a brand-new
@@ -292,60 +292,94 @@ Work Order / Proposal before it gets drafted section by section.
 
 Operating rules:
 1. Your VERY FIRST action, before asking anything, must be a cfc_search_corpus
-   call seeded from the user's brief (below). Do not ask a generic question
-   before you have looked — QCI's own institutional memory should shape what
-   you ask, not generic proposal-writing boilerplate. For example, if the
-   brief mentions grievance redressal, search first; if that surfaces QCI's
-   CPGRAMS/DARPG PMU engagements, your first question should reference that
-   directly ("QCI's prior grievance-redressal work has been through the
+   call seeded from the user's title and brief (below). Do not ask a generic
+   question before you have looked — QCI's own institutional memory should
+   shape what you ask, not generic proposal-writing boilerplate. For example,
+   if the brief mentions grievance redressal, search first; if that surfaces
+   QCI's CPGRAMS/DARPG PMU engagements, your first question should reference
+   that directly ("QCI's prior grievance-redressal work has been through the
    CPGRAMS PMU model with DARPG — should this follow that same structure, or
-   is it a different mechanism? Which state government is this for?") rather
-   than asking something generic a search wouldn't have told you.
-2. Ask ONE focused clarifying question per turn — things like: which client/
-   state/ministry, new engagement vs. extension of prior work, which past
-   QCI engagement (if any) this should most resemble, and anything about
-   scope/duration/budget only if it seems relevant to precedent selection.
-   Do not ask more than necessary — every question should narrow down which
-   real corpus documents are the right precedent.
-3. You may ask at most {max_turns} questions total. The user prompt tells you
+   is it a different mechanism?") rather than asking something generic a
+   search wouldn't have told you.
+2. The title may already answer things you'd otherwise ask — e.g. a title
+   naming a specific state/city/ministry means you already know the client;
+   do not re-ask for information already stated in the title or brief.
+3. Ask ONE focused clarifying question per turn. Cover two kinds of ground:
+   (a) which client/state/ministry, new engagement vs. extension of prior
+   work, which past QCI engagement this should most resemble — anything that
+   narrows down the right precedent; and (b) concrete gaps in the brief
+   itself that would make the generated document vague if left unanswered —
+   budget/financial figures, timeline/duration, specific jurisdiction or
+   location, specific deliverables or activities — when the brief doesn't
+   already cover them and the "Known gaps" list below flags them. Do not ask
+   more than necessary, and do not ask about something the title, brief, or
+   the conversation so far already answered.
+4. You may ask at most {max_turns} questions total. The user prompt tells you
    which turn you're on. On or before the last turn, you MUST call
    cfc_ready_to_generate instead of asking anything else.
-4. Before calling cfc_ready_to_generate, run at least one more
+5. Before calling cfc_ready_to_generate, run at least one more
    cfc_search_corpus query built from the FULL clarified context (not just
    the raw brief), inspect the hits, and choose 2-5 doc_ids that are genuinely
    the best precedent for this document — pass them as key_doc_ids. Only pass
    a doc_id you actually saw in a real search/get-document result this
    conversation; never guess or invent one.
-5. Never call cfc_propose_insert, cfc_propose_replace, or cfc_propose_redline
+6. Never call cfc_propose_insert, cfc_propose_replace, or cfc_propose_redline
    — intake only reads and asks, it never mutates the draft.
-6. All results respect the caller's division silo — you cannot see other
+7. All results respect the caller's division silo — you cannot see other
    boards' documents.
 
-Be terse and conversational — this is a quick scoping chat, not a form.
+Be terse and conversational — this is a quick scoping chat, not a form. Once
+you've decided what to ask, say ONLY the question itself: do not narrate what
+you're about to do or have done ("I'll search...", "Good, I can see...",
+"Now let me ask...") before it — that narration is shown to the user and
+reads as clutter, not helpful context. Do not use markdown formatting
+(**bold**, # headings, etc.) in anything you say — plain conversational text
+only.
 """
 
-DRAFT_INTAKE_USER_TEMPLATE = """Brief: {brief}
+DRAFT_INTAKE_USER_TEMPLATE = """Title: {title}
+Brief: {brief}
 
-Turn {turn_count} of {max_turns}.
+Turn {turn_count} of {max_turns}.{gaps_block}
 {transcript_block}"""
 
 
-def draft_intake_system() -> str:
-    return DRAFT_INTAKE_SYSTEM_TEMPLATE.format(max_turns=MAX_INTAKE_TURNS)
+def draft_intake_system(force_final: bool = False) -> str:
+    """`force_final=True` is a hard server-side stop, not a restatement of the
+    prompt's own "{max_turns}" soft guidance — the turn counter it's keyed off
+    is client-supplied and nothing previously checked it against
+    MAX_INTAKE_TURNS at all, so a model that just kept asking could run
+    indefinitely with only its own prompt-reading to stop it. This appends an
+    unambiguous directive on the turn the server itself has decided is last."""
+    base = DRAFT_INTAKE_SYSTEM_TEMPLATE.format(max_turns=MAX_INTAKE_TURNS)
+    if force_final:
+        base += (
+            "\n\nThis is your FINAL turn — the question budget is exhausted. You MUST "
+            "call cfc_ready_to_generate now with your best judgment from what's been "
+            "discussed so far. Do not ask another question."
+        )
+    return base
 
 
 def draft_intake_user(
     brief: str,
     transcript: list[dict[str, str]] | None = None,
     turn_count: int = 1,
+    title: str = "",
+    gaps: list[str] | None = None,
 ) -> str:
     transcript_block = ""
     if transcript:
         lines = "\n".join(f"{t.get('role', 'user')}: {t.get('text', '')}" for t in transcript)
         transcript_block = f"\nConversation so far:\n{lines}\n"
+    gaps_block = ""
+    if gaps:
+        gaps_block = f"\nKnown gaps still unaddressed: {', '.join(gaps)} — consider one of these next unless the brief/title make it clearly irrelevant."
     return DRAFT_INTAKE_USER_TEMPLATE.format(
+        title=title.strip() or "(not given)",
         brief=brief.strip() or "(not given)",
         turn_count=turn_count,
         max_turns=MAX_INTAKE_TURNS,
+        gaps_block=gaps_block,
         transcript_block=transcript_block,
     )
