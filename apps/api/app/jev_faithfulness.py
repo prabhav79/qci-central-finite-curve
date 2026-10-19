@@ -45,7 +45,13 @@ _EVIDENCE_CHAR_LIMIT = 8000
 _MIN_CLAIM_WORDS = 6
 _HEADING_LINE_RE = re.compile(r"^\s*#{1,6}\s+[^\n]*\n?", re.M)
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+", re.M)
-_LEAD_LABEL_RE = re.compile(r"^[A-Z][A-Z &/,-]+:\s*")  # "DATA ACCESS AND COOPERATION: "
+# A short lead-in label ("District Coordinators:", "DATA ACCESS AND
+# COOPERATION:") names a role or clause; the facts follow it.
+_LEAD_LABEL_RE = re.compile(r"^([^:]{1,60}):\s+")
+_LEAD_LABEL_MAX_WORDS = 6
+_ROW_SERIAL_RE = re.compile(r"^\s*\|\s*\d{1,2}\s*\|", re.M)  # "| 2 | Draft report |" -> row no. 2
+# Instructions to the maker are not claims about the world.
+_MAKER_NOTE_RE = re.compile(r"^\W*(?:note for (?:the )?maker|maker to )", re.I)
 
 # The fact tokens a hallucination would invent: numbers, acronyms, names.
 _NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
@@ -128,15 +134,22 @@ def _supported(kind: str, token: str, evidence_norm: str, initials: set[str]) ->
 def _candidate_claims(section_text: str) -> list[str]:
     """Sentences worth checking: ones carrying a number, acronym or name —
     the exact failure shape 2a's fix targets ("Special Campaign 2.0 & 3.0").
-    Headings and list-number fragments ("Objectives 1.", "2.") aren't claims;
-    table rows are checked as plain text."""
-    body = _LIST_MARKER_RE.sub("", _HEADING_LINE_RE.sub("", section_text)).replace("|", " ")
-    sentences = [" ".join(s.split()) for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
-    sentences = [_LEAD_LABEL_RE.sub("", s.strip("*_ ")) for s in sentences]
-    return [
-        s for s in sentences
-        if len(s.split()) >= _MIN_CLAIM_WORDS and not _is_title_line(s) and _fact_tokens(s)
-    ]
+    Headings, list-number fragments ("Objectives 1.", "2.") and notes to
+    the maker aren't claims. A table row is checked as text, each cell
+    starting like a sentence."""
+    body = _LIST_MARKER_RE.sub("", _HEADING_LINE_RE.sub("", section_text))
+    body = _ROW_SERIAL_RE.sub("|", body).replace("|", " : ")
+    sentences = [" ".join(s.split()).strip("*_ ") for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
+    claims = []
+    for s in sentences:
+        if _MAKER_NOTE_RE.match(s):
+            continue
+        label = _LEAD_LABEL_RE.match(s)
+        if label and len(label.group(1).split()) <= _LEAD_LABEL_MAX_WORDS:
+            s = s[label.end():]
+        if len(s.split()) >= _MIN_CLAIM_WORDS and not _is_title_line(s) and _fact_tokens(s):
+            claims.append(s)
+    return claims
 
 
 def _is_title_line(line: str) -> bool:
@@ -161,10 +174,13 @@ def check_section(section_text: str, evidence: str) -> list[dict[str, object]]:
         return []
     evidence_norm = _norm(f"{_AUTHOR}\n{evidence}")
     initials =_initials(f"{evidence}\n{section_text}")
-    claims = [
-        c for c in _candidate_claims(section_text)
-        if not all(_supported(k, t, evidence_norm, initials) for k, t in _fact_tokens(c))
-    ][:_MAX_CLAIMS_PER_SECTION]
+    claims: list[str] = []
+    for c in _candidate_claims(section_text):
+        missing = [t for k, t in _fact_tokens(c) if not _supported(k, t, evidence_norm, initials)]
+        if missing:
+            log.info("faithfulness: not in evidence %s — %.80s", missing, c)
+            claims.append(c)
+    claims = claims[:_MAX_CLAIMS_PER_SECTION]
     if not claims:
         return []
 

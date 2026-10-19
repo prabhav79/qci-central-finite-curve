@@ -2122,10 +2122,12 @@ def agent_chat(
                             # The user's own brief and clarification answers are ground
                             # truth too — without them every client fact gets flagged.
                             precedent_titles = "; ".join(d["title"] for d in key_docs or [])
+                            section_titles = "; ".join(t for _, t in outline)
                             evidence = "\n\n".join(
                                 [
                                     "Brief and answers from the user (treat as true):\n"
-                                    f"{draft.title}\n{body.prompt}\nChosen precedents: {precedent_titles}",
+                                    f"{draft.title}\n{body.prompt}\nChosen precedents: {precedent_titles}\n"
+                                    f"Sections of this document: {section_titles}",
                                     *section_evidence_parts,
                                 ]
                             )
