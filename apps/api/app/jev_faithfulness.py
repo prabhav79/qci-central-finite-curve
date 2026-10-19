@@ -49,23 +49,35 @@ _LEAD_LABEL_RE = re.compile(r"^[A-Z][A-Z &/,-]+:\s*")  # "DATA ACCESS AND COOPER
 
 # The fact tokens a hallucination would invent: numbers, acronyms, names.
 _NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
-_ACRONYM_RE = re.compile(r"\b([A-Z][A-Z&]*[A-Z])s?\b")
+# Two or more capitals: PMMSY, KIIs, SDC&FPO, and mixed-case DoF / MoU.
+_ACRONYM_RE = re.compile(r"\b[A-Z][A-Za-z&]*[A-Z][A-Za-z&]*\b")
 # "and" is not a name connector: "Field Supervisors and Enumerators" is two
 # names, checked separately.
-_NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:(?:\s+(?:of|for|the)\s+|\s+)[A-Z][a-z]+)*")
+_NAME_RE = re.compile(r"\b[A-Z][a-z]+\b(?:(?:\s+(?:of|for|the)\s+|\s+)[A-Z][a-z]+\b)*")
+# Phrases an acronym can abbreviate: "Department of Fisheries" -> DoF / DF.
+_EXPANSION_RE = re.compile(r"\b[A-Z][a-z]+\b(?:\s+(?:(?:of|for|the|and|&)\s+)?[A-Z][a-z]+\b)+")
+_CONNECTORS = {"of", "for", "the", "and", "&"}
+# QCI writes every proposal, so its own name never needs a source.
+_AUTHOR = "Quality Council of India (QCI)"
 _DETERMINERS = {"The", "This", "These", "That", "Those", "A", "An", "Each", "Our", "Its", "Their", "All", "Any"}
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"(?<=\d),(?=\d)", "", " ".join(text.lower().split()))
+    """Lower-case, single-spaced, "6,000" -> "6000", British -ise -> -ize."""
+    text = re.sub(r"(?<=\d),(?=\d)", "", " ".join(text.lower().split()))
+    return re.sub(r"is(ations?|e|ed|es|ing)\b", r"iz\1", text)
 
 
-def _fact_tokens(sentence: str) -> list[str]:
-    """Numbers, acronyms and capitalised names in a sentence. A lone
-    capitalised word that only starts the sentence (or follows a colon)
-    is grammar, not a name, and is skipped."""
-    tokens = [n.replace(",", "") for n in _NUMBER_RE.findall(sentence)]
-    tokens += [a for part in _ACRONYM_RE.findall(sentence) for a in part.split("&") if len(a) >= 2]
+def _fact_tokens(sentence: str) -> list[tuple[str, str]]:
+    """(kind, token) for the numbers, acronyms and capitalised names in a
+    sentence. A lone capitalised word that only starts the sentence (or
+    follows a colon) is grammar, not a name, and is skipped."""
+    tokens = [("num", n.replace(",", "")) for n in _NUMBER_RE.findall(sentence)]
+    for a in _ACRONYM_RE.findall(sentence):
+        for part in a.split("&"):
+            part = re.sub(r"(?<=[A-Z])s$", "", part)  # KIIs -> KII
+            if len(part) >= 2:
+                tokens.append(("acr", part))
     for m in _NAME_RE.finditer(sentence):
         words = m.group(0).split()
         while words and words[0] in _DETERMINERS:
@@ -75,8 +87,23 @@ def _fact_tokens(sentence: str) -> list[str]:
         sentence_initial = m.start() == 0 or sentence[: m.start()].rstrip().endswith((":", "("))
         if len(words) == 1 and sentence_initial:
             continue
-        tokens.append(" ".join(words))
+        tokens.append(("name", " ".join(words)))
     return tokens
+
+
+def _initials(text: str) -> set[str]:
+    """Lower-cased initials of every capitalised phrase (and its tails), with
+    and without connector initials: "The Department of Fisheries" -> dof, df."""
+    out: set[str] = set()
+    for m in _EXPANSION_RE.finditer(text):
+        words = m.group(0).split()
+        for i, w in enumerate(words):
+            if w in _CONNECTORS or w in _DETERMINERS:
+                continue
+            tail = words[i:]
+            out.add("".join(t[0] for t in tail).lower())
+            out.add("".join(t[0] for t in tail if t not in _CONNECTORS).lower())
+    return out
 
 
 def _in_evidence(token: str, evidence_norm: str) -> bool:
@@ -85,11 +112,25 @@ def _in_evidence(token: str, evidence_norm: str) -> bool:
     return any(re.search(rf"(?<![a-z0-9]){re.escape(v)}(?![a-z0-9])", evidence_norm) for v in variants)
 
 
+def _supported(kind: str, token: str, evidence_norm: str, initials: set[str]) -> bool:
+    if _in_evidence(token, evidence_norm):
+        return True
+    if kind == "acr":
+        return token.lower() in initials  # abbreviation of a name used in the text
+    if kind == "name" and " " in token:
+        # Role and document titles ("State Coordinators", "Draft Report") are
+        # ordinary words capitalised; invented programme names still carry a
+        # number or acronym that fails above.
+        return all(_in_evidence(w, evidence_norm) for w in token.split() if w not in _CONNECTORS)
+    return False
+
+
 def _candidate_claims(section_text: str) -> list[str]:
     """Sentences worth checking: ones carrying a number, acronym or name —
     the exact failure shape 2a's fix targets ("Special Campaign 2.0 & 3.0").
-    Headings and list-number fragments ("Objectives 1.", "2.") aren't claims."""
-    body = _LIST_MARKER_RE.sub("", _HEADING_LINE_RE.sub("", section_text))
+    Headings and list-number fragments ("Objectives 1.", "2.") aren't claims;
+    table rows are checked as plain text."""
+    body = _LIST_MARKER_RE.sub("", _HEADING_LINE_RE.sub("", section_text)).replace("|", " ")
     sentences = [" ".join(s.split()) for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
     sentences = [_LEAD_LABEL_RE.sub("", s.strip("*_ ")) for s in sentences]
     return [
@@ -109,18 +150,20 @@ def check_section(section_text: str, evidence: str) -> list[dict[str, object]]:
     i.e. the flags actually worth surfacing, never the full claim list.
     Each item: {"claim": str, "score": float}.
 
-    Two stages: a sentence whose every number, acronym and name appears in
+    Two stages: a sentence whose every number, acronym and name is found in
     the evidence (brief, answers, retrieved sources) is supported outright —
     Jev scores proposal language ("QCI will deliver…") as unsupported even
-    when every fact in it came from the brief. Only sentences carrying a
-    fact found nowhere in the evidence go to Jev, which then forgives
+    when every fact in it came from the brief. An acronym also counts when
+    it abbreviates a name in the evidence or the section ("DoF"). Only
+    sentences carrying a fact found nowhere go to Jev, which then forgives
     paraphrase ("eight months" for "8 months")."""
     if not evidence.strip() or not jev_client.is_configured():
         return []
-    evidence_norm = _norm(evidence)
+    evidence_norm = _norm(f"{_AUTHOR}\n{evidence}")
+    initials =_initials(f"{evidence}\n{section_text}")
     claims = [
         c for c in _candidate_claims(section_text)
-        if not all(_in_evidence(t, evidence_norm) for t in _fact_tokens(c))
+        if not all(_supported(k, t, evidence_norm, initials) for k, t in _fact_tokens(c))
     ][:_MAX_CLAIMS_PER_SECTION]
     if not claims:
         return []

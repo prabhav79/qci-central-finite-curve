@@ -304,10 +304,13 @@ def _keep_list_numbers(text: str) -> str:
     for seq, broken in zip(sequences, interrupted):
         if not broken:
             continue
-        for i in seq:
-            num, body = _MD_NUMBERED_ITEM_RE.match(lines[i].strip()).groups()  # type: ignore[union-attr]
+        items = [_MD_NUMBERED_ITEM_RE.match(lines[i].strip()).groups() for i in seq]  # type: ignore[union-attr]
+        # Short labels read as headings and go fully bold; if any item is a
+        # full sentence, every item in the list gets just a bold number.
+        headings = all(len(body.replace("**", "").split()) <= 12 for _, body in items)
+        for i, (num, body) in zip(seq, items):
             plain = body.replace("**", "").strip()
-            lead = f"**{num}. {plain}**" if len(plain.split()) <= 12 else f"**{num}.** {body}"
+            lead = f"**{num}. {plain}**" if headings else f"**{num}.** {body}"
             # Directly under a bullet, a plain line is a lazy continuation of
             # that bullet in markdown — a blank line keeps it a paragraph.
             lines[i] = f"\n{lead}" if i and lines[i - 1].strip() else lead
