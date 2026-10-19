@@ -233,6 +233,11 @@ Operating rules:
    relevant for this section, still call cfc_propose_insert with a short
    placeholder noting the maker needs to fill this section in manually — do
    not skip the tool call, every section must exist in the draft.
+   Money and quantities: use the figures given in the brief and answers.
+   Never compute a new rate, unit cost or total from a precedent's cost
+   table — table columns are often scrambled by text extraction, so a
+   "rate" you read there may be a different column. Where an amount is
+   not given in the brief, write "to be confirmed" instead of a number.
 6. All results respect the caller's division silo — you cannot see other
    boards' documents.
 
@@ -363,6 +368,10 @@ Operating rules:
    — intake only reads and asks, it never mutates the draft.
 7. All results respect the caller's division silo — you cannot see other
    boards' documents.
+8. Never quote or calculate rates, unit costs or totals from a precedent's
+   cost table — table columns are often scrambled by text extraction. You
+   may say a precedent has a cost breakdown, then ask the user for their
+   own figures.
 
 Be terse and conversational — this is a quick scoping chat, not a form. Once
 you've decided what to ask, say ONLY the question itself: do not narrate what

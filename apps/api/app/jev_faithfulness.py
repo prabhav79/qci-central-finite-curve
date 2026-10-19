@@ -39,15 +39,22 @@ _HAS_DIGIT_RE = re.compile(r"\d")
 _PROPER_NOUN_RE = re.compile(r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+\b")
 
 _MAX_CLAIMS_PER_SECTION = 8
+_MAX_FLAGS_PER_SECTION = 3
 _UNSUPPORTED_THRESHOLD = 0.4
 _EVIDENCE_CHAR_LIMIT = 8000
+_MIN_CLAIM_WORDS = 6
+_HEADING_LINE_RE = re.compile(r"^\s*#{1,6}\s+[^\n]*\n?", re.M)
+_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+", re.M)
 
 
 def _candidate_claims(section_text: str) -> list[str]:
     """Sentences worth checking: contain a digit (a number/date/amount) or
     a multi-word capitalized phrase (a likely proper noun) — the exact
-    failure shape 2a's fix targets ("Special Campaign 2.0 & 3.0")."""
-    sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(section_text) if s.strip()]
+    failure shape 2a's fix targets ("Special Campaign 2.0 & 3.0").
+    Headings and list-number fragments ("Objectives 1.", "2.") aren't claims."""
+    body = _LIST_MARKER_RE.sub("", _HEADING_LINE_RE.sub("", section_text))
+    sentences = [" ".join(s.split()) for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
+    sentences = [s.strip("*_ ") for s in sentences if len(s.split()) >= _MIN_CLAIM_WORDS]
     claims = [s for s in sentences if _HAS_DIGIT_RE.search(s) or _PROPER_NOUN_RE.search(s)]
     return claims[:_MAX_CLAIMS_PER_SECTION]
 
@@ -85,4 +92,6 @@ def check_section(section_text: str, evidence: str) -> list[dict[str, object]]:
         score = answers.get(f"claim::{i}", {}).get("noul")
         if isinstance(score, (int, float)) and score < _UNSUPPORTED_THRESHOLD:
             flags.append({"claim": claim, "score": round(float(score), 2)})
-    return flags
+    # A reviewer acts on a short list; show only the least-supported few.
+    flags.sort(key=lambda f: f["score"])
+    return flags[:_MAX_FLAGS_PER_SECTION]

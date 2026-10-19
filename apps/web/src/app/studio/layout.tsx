@@ -20,7 +20,7 @@ export default function StudioLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-surface text-text">
       <nav className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border bg-surface-raised px-3 py-2 text-sm">
-        <Link href="/" className="mr-2 flex items-center gap-2 rounded px-1 py-1">
+        <Link href="/" className="mr-2 flex shrink-0 items-center gap-2 rounded px-1 py-1">
           <div className="rounded bg-white px-1.5 py-1 shadow-sm">
             <Image src={qciLogo} alt="QCI" className="h-5 w-auto" />
           </div>

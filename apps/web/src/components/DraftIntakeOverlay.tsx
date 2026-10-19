@@ -274,8 +274,8 @@ export function DraftIntakeOverlay({
       ) : currentQuestion ? (
         <div key={turnCount} className="animate-rise-in rounded-lg border border-agent/30 bg-agent/10 p-3">
           <span className="text-xs font-medium text-agent">
-            Question {turnCount}
-            {maxTurns ? ` of up to ${maxTurns}` : ""}
+            Question {history.length + 1}
+            {maxTurns ? ` of up to ${maxTurns - 1}` : ""}
           </span>
           <p className="mt-1 text-sm text-text">{renderInlineEmphasis(currentQuestion)}</p>
         </div>

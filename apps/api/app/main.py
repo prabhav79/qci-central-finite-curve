@@ -2117,9 +2117,12 @@ def agent_chat(
                     else:
                         generated.append(section_label)
                         if section_generated_text and section_evidence_parts:
-                            flags = jev_faithfulness.check_section(
-                                section_generated_text, "\n\n".join(section_evidence_parts)
+                            # The user's own brief and clarification answers are ground
+                            # truth too — without them every client fact gets flagged.
+                            evidence = "\n\n".join(
+                                [f"Brief and answers from the user (treat as true):\n{body.prompt}", *section_evidence_parts]
                             )
+                            flags = jev_faithfulness.check_section(section_generated_text, evidence)
                             if flags:
                                 yield _sse(
                                     {"type": "faithfulness_flag", "section": section_label, "flags": flags}
