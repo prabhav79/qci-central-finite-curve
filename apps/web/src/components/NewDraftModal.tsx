@@ -5,45 +5,44 @@ import {
   type CorpusHit,
   type GenerationTemplate,
   type PersonaKey,
-  type Provider,
+  type ServerLlm,
   corpusSearch,
+  errorText,
   listGenerationTemplates,
-  loadStoredApiKey,
-  storeApiKey,
 } from "@/lib/cfcApi";
+import { formatDateTimeIST } from "@/lib/dates";
+import { type LlmChoice, choiceReady, missingKeyMessage } from "@/lib/llmChoice";
 import { Modal } from "@/components/Modal";
+import { ModelPicker } from "@/components/ModelPicker";
 
 export type TemplateChoice =
   | { source: "catalog"; templateCode: string }
   | { source: "corpus_doc"; corpusDocId: string };
 
-export type GenerationProviderChoice = { provider: Provider; apiKey: string; model: string };
-
-const PROVIDERS: Provider[] = ["mock", "gemini", "openai", "anthropic"];
-
 function defaultTitle(): string {
-  const now = new Date();
-  const stamp = now.toISOString().slice(0, 16).replace("T", " ");
-  return `Untitled draft — ${stamp}`;
+  return `Untitled draft — ${formatDateTimeIST(new Date())}`;
 }
 
 export function NewDraftModal({
   open,
   persona,
   busy,
+  choice,
+  onChoiceChange,
+  serverLlm,
+  isAdmin,
   onCancel,
   onConfirm,
 }: {
   open: boolean;
   persona: PersonaKey;
   busy?: boolean;
+  choice: LlmChoice;
+  onChoiceChange: (next: LlmChoice) => void;
+  serverLlm: ServerLlm | null | undefined;
+  isAdmin: boolean;
   onCancel: () => void;
-  onConfirm: (
-    title: string,
-    brief: string,
-    template: TemplateChoice,
-    generationProvider: GenerationProviderChoice,
-  ) => Promise<void> | void;
+  onConfirm: (title: string, brief: string, template: TemplateChoice) => Promise<void> | void;
 }) {
   const [title, setTitle] = useState("");
   const [catalog, setCatalog] = useState<GenerationTemplate[]>([]);
@@ -55,20 +54,6 @@ export function NewDraftModal({
   const [selectedDoc, setSelectedDoc] = useState<{ doc_id: string; title: string } | null>(null);
   const [brief, setBrief] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [genProvider, setGenProvider] = useState<Provider>("mock");
-  const [genApiKey, setGenApiKey] = useState("");
-  const [genModel, setGenModel] = useState("");
-
-  function selectProvider(p: Provider) {
-    setGenProvider(p);
-    setGenModel("");
-    setGenApiKey(p === "mock" ? "" : loadStoredApiKey(p));
-  }
-
-  function updateGenApiKey(value: string) {
-    setGenApiKey(value);
-    storeApiKey(genProvider, value);
-  }
 
   useEffect(() => {
     if (!open) return;
@@ -80,10 +65,9 @@ export function NewDraftModal({
     setDocQuery("");
     setDocResults([]);
     setSelectedDoc(null);
-    setGenProvider("mock");
-    setGenApiKey("");
-    setGenModel("");
-    void listGenerationTemplates(persona).then((res) => setCatalog(res.items));
+    void listGenerationTemplates(persona)
+      .then((res) => setCatalog(res.items))
+      .catch(() => setCatalog([]));
   }, [open, persona]);
 
   if (!open) return null;
@@ -92,7 +76,7 @@ export function NewDraftModal({
     if (!docQuery.trim()) return;
     setDocSearching(true);
     try {
-      const res = await corpusSearch(docQuery.trim(), 20);
+      const res = await corpusSearch(docQuery.trim(), 20, persona);
       const seen = new Set<string>();
       const deduped: CorpusHit[] = [];
       for (const hit of res.hits) {
@@ -103,7 +87,7 @@ export function NewDraftModal({
       }
       setDocResults(deduped);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setDocSearching(false);
     }
@@ -111,15 +95,15 @@ export function NewDraftModal({
 
   async function submit() {
     if (!title.trim()) {
-      setError("Give the draft a title.");
+      setError("Give the document a title.");
       return;
     }
     if (mode === "corpus_doc" && !selectedDoc) {
-      setError("Pick a document to base the structure on, or switch back to a fixed format.");
+      setError("Pick a document to base the layout on, or switch back to a standard template.");
       return;
     }
-    if (brief.trim() && genProvider !== "mock" && !genApiKey.trim()) {
-      setError(`Enter your ${genProvider} API key, or switch to Mock for a no-key test run.`);
+    if (brief.trim() && !choiceReady(choice)) {
+      setError(missingKeyMessage(choice));
       return;
     }
     setError(null);
@@ -128,13 +112,9 @@ export function NewDraftModal({
         ? { source: "corpus_doc", corpusDocId: selectedDoc!.doc_id }
         : { source: "catalog", templateCode };
     try {
-      await onConfirm(title.trim(), brief.trim(), template, {
-        provider: genProvider,
-        apiKey: genApiKey.trim(),
-        model: genModel.trim(),
-      });
+      await onConfirm(title.trim(), brief.trim(), template);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   }
 
@@ -142,9 +122,9 @@ export function NewDraftModal({
 
   return (
     <Modal open={open} onClose={busy ? undefined : onCancel}>
-      <h2 className="mb-3 text-sm font-semibold text-text">New draft</h2>
+      <h2 className="mb-3 text-base font-semibold text-text">New document</h2>
 
-      <label className="block text-xs text-text-muted">
+      <label className="block text-[13px] text-text-muted">
         Title
         <input
           value={title}
@@ -155,19 +135,21 @@ export function NewDraftModal({
       </label>
 
       <div className="mt-3">
-        <span className="block text-xs text-text-muted">Structure</span>
-        <div className="mt-1 flex gap-1 text-[11px]">
+        <span className="block text-[13px] text-text-muted">Layout</span>
+        <div className="mt-1 flex flex-wrap gap-1 text-[13px]">
           <button
             type="button"
             onClick={() => setMode("catalog")}
-            className={`rounded-md px-2 py-1 transition-colors ${mode === "catalog" ? "bg-accent text-white" : "bg-surface-sunken text-text-muted hover:text-text"}`}
+            aria-pressed={mode === "catalog"}
+            className={`rounded-md px-2.5 py-1 transition-colors ${mode === "catalog" ? "bg-accent text-white" : "bg-surface-sunken text-text-muted hover:text-text"}`}
           >
-            Fixed format
+            Standard template
           </button>
           <button
             type="button"
             onClick={() => setMode("corpus_doc")}
-            className={`rounded-md px-2 py-1 transition-colors ${mode === "corpus_doc" ? "bg-accent text-white" : "bg-surface-sunken text-text-muted hover:text-text"}`}
+            aria-pressed={mode === "corpus_doc"}
+            className={`rounded-md px-2.5 py-1 transition-colors ${mode === "corpus_doc" ? "bg-accent text-white" : "bg-surface-sunken text-text-muted hover:text-text"}`}
           >
             Base on an existing QCI document
           </button>
@@ -178,26 +160,27 @@ export function NewDraftModal({
             <select
               value={templateCode}
               onChange={(e) => setTemplateCode(e.target.value)}
+              aria-label="Template"
               className="w-full rounded-lg border border-border-strong bg-surface-sunken px-2 py-1.5 text-sm text-text"
             >
-              {catalog.length === 0 && <option value="BLANK">Blank canvas</option>}
+              {catalog.length === 0 && <option value="BLANK">Blank document</option>}
               {catalog.map((t) => (
                 <option key={t.template_code} value={t.template_code}>
-                  {t.label}
+                  {t.template_code === "BLANK" ? "Blank document" : t.label}
                 </option>
               ))}
             </select>
-            {selectedCatalogEntry && (
-              <p className="mt-1 text-[11px] text-text-muted">{selectedCatalogEntry.description}</p>
+            {selectedCatalogEntry && selectedCatalogEntry.template_code !== "BLANK" && (
+              <p className="mt-1 text-xs text-text-muted">{selectedCatalogEntry.description}</p>
             )}
           </div>
         )}
 
         {mode === "corpus_doc" && (
           <div className="mt-2">
-            <p className="mb-1 text-[11px] text-text-muted">
-              Only the document&apos;s section shape is reused (e.g. its Deliverables / Payment
-              Milestones breakdown) — its actual content is never copied into the new draft.
+            <p className="mb-1 text-xs text-text-muted">
+              Only the section layout is reused (for example its Deliverables and Payment milestones).
+              None of its text is copied into the new document.
             </p>
             <div className="flex gap-1">
               <input
@@ -205,45 +188,49 @@ export function NewDraftModal({
                 onChange={(e) => setDocQuery(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), void searchDocs())}
                 placeholder="e.g. CPGRAMS"
+                aria-label="Search QCI documents"
                 className="flex-1 rounded-lg border border-border-strong bg-surface-sunken px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
               />
               <button
                 type="button"
                 onClick={() => void searchDocs()}
                 disabled={docSearching || !docQuery.trim()}
-                className="rounded-lg border border-border-strong px-2 py-1.5 text-xs text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
+                className="rounded-lg border border-border-strong px-2.5 py-1.5 text-[13px] text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
               >
-                {docSearching ? "…" : "Search"}
+                {docSearching ? "Searching…" : "Search"}
               </button>
             </div>
             {docResults.length > 0 && (
-              <ul className="mt-2 max-h-32 space-y-1 overflow-auto">
+              <ul className="mt-2 max-h-36 space-y-1 overflow-auto">
                 {docResults.map((hit) => (
                   <li key={hit.doc_id}>
                     <button
                       type="button"
                       onClick={() => setSelectedDoc({ doc_id: hit.doc_id, title: hit.title })}
-                      className={`w-full rounded-lg border px-2 py-1 text-left text-[11px] transition-colors ${
+                      className={`w-full rounded-lg border px-2 py-1 text-left text-[13px] transition-colors ${
                         selectedDoc?.doc_id === hit.doc_id
                           ? "border-status-approved-border bg-status-approved-surface text-status-approved-text"
                           : "border-border bg-surface-sunken text-text-muted hover:text-text"
                       }`}
                     >
                       {hit.title}
+                      {hit.ministry && (
+                        <span className="block text-xs text-text-muted">{hit.ministry}</span>
+                      )}
                     </button>
                   </li>
                 ))}
               </ul>
             )}
             {selectedDoc && (
-              <p className="mt-1 text-[11px] text-status-approved-text">Using structure from: {selectedDoc.title}</p>
+              <p className="mt-1 text-xs text-status-approved-text">Using the layout of: {selectedDoc.title}</p>
             )}
           </div>
         )}
       </div>
 
-      <label className="mt-3 block text-xs text-text-muted">
-        Describe what you need <span className="text-text-muted/70">(optional — generates a first draft)</span>
+      <label className="mt-3 block text-[13px] text-text-muted">
+        Describe what you need <span className="text-text-muted/80">(optional — we&apos;ll write a first draft)</span>
         <textarea
           value={brief}
           onChange={(e) => setBrief(e.target.value)}
@@ -252,58 +239,33 @@ export function NewDraftModal({
           className="mt-1 w-full resize-none rounded-lg border border-border-strong bg-surface-sunken px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
         />
         {brief.trim() && (
-          <span className="mt-1 block text-[11px] text-status-approved-text">
-            The agent will ask a few clarifying questions, then draft each section grounded in the
-            corpus for you to review.
+          <span className="mt-1 block text-xs text-status-approved-text">
+            The assistant will ask a few quick questions, then write each section using QCI&apos;s past
+            documents as reference.
           </span>
         )}
       </label>
 
       {brief.trim() && (
         <div className="mt-2">
-          <span className="block text-xs text-text-muted">Model</span>
-          <div className="mt-1 grid grid-cols-4 gap-1 text-[10px]">
-            {PROVIDERS.map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => selectProvider(p)}
-                className={`rounded-md px-1 py-1 uppercase tracking-wide transition-colors ${
-                  genProvider === p ? "bg-agent text-white" : "bg-surface-sunken text-text-muted hover:text-text"
-                }`}
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-          {genProvider !== "mock" && (
-            <>
-              <input
-                type="password"
-                value={genApiKey}
-                onChange={(e) => updateGenApiKey(e.target.value)}
-                placeholder={`${genProvider} API key (BYOK — remembered in this browser only)`}
-                className="mt-1.5 w-full rounded-lg border border-border-strong bg-surface-sunken px-1.5 py-1 font-mono text-[10px] text-text outline-none focus:border-accent"
-              />
-              <input
-                value={genModel}
-                onChange={(e) => setGenModel(e.target.value)}
-                placeholder="model (optional — uses the provider default)"
-                className="mt-1 w-full rounded-lg border border-border-strong bg-surface-sunken px-1.5 py-1 text-[10px] text-text outline-none focus:border-accent"
-              />
-            </>
-          )}
+          <ModelPicker
+            choice={choice}
+            onChange={onChoiceChange}
+            serverLlm={serverLlm}
+            isAdmin={isAdmin}
+            disabled={busy}
+          />
         </div>
       )}
 
-      {error && <p className="mt-2 text-xs text-status-rejected-text">{error}</p>}
+      {error && <p className="mt-2 text-[13px] text-status-rejected-text">{error}</p>}
 
       <div className="mt-4 flex justify-end gap-2">
         <button
           type="button"
           onClick={onCancel}
           disabled={busy}
-          className="rounded-lg border border-border-strong px-3 py-1.5 text-xs text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
+          className="rounded-lg border border-border-strong px-3 py-1.5 text-[13px] text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
         >
           Cancel
         </button>
@@ -311,7 +273,7 @@ export function NewDraftModal({
           type="button"
           onClick={() => void submit()}
           disabled={busy}
-          className="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
+          className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
           {busy ? "Creating…" : brief.trim() ? "Create & continue" : "Create"}
         </button>

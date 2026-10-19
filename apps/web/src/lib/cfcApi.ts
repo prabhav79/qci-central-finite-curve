@@ -41,21 +41,8 @@ export const PERSONAS: Record<
 
 export type Provider = "mock" | "gemini" | "openai" | "anthropic";
 
-export const PROVIDER_MODELS: Record<Provider, string> = {
-  mock: "",
-  gemini: "gemini-2.0-flash",
-  openai: "gpt-4o-mini",
-  // Haiku, not Opus/Sonnet — meant for BYOK keys on a small prepaid budget;
-  // see agent_llm.py's DEFAULT_MODELS for the same choice server-side.
-  anthropic: "claude-haiku-4-5",
-};
-
-// Remembers a BYOK key per provider, per browser — never sent anywhere but
-// straight to /agent/chat (same as typing it in fresh). Deliberately client-
-// side only: the project's BYOK design has no server-side key storage, so
-// "remembering" a key has to live in the browser, not the account. Shared
-// between AgentPanel and NewDraftModal so a key entered in one place is
-// visible in the other.
+// BYOK keys are remembered per provider in this browser only; there is no
+// server-side key storage for user-supplied keys.
 export function apiKeyStorageKey(p: Provider): string {
   return `cfc.agentApiKey.${p}`;
 }
@@ -76,8 +63,144 @@ export function storeApiKey(p: Provider, value: string): void {
       window.localStorage.removeItem(apiKeyStorageKey(p));
     }
   } catch {
-    // Private browsing / blocked storage — key just won't persist.
+    // Private browsing / blocked storage: the key just won't persist.
   }
+}
+
+export class ApiError extends Error {
+  status: number;
+  detail?: string;
+  constructor(message: string, status: number, detail?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
+}
+
+const NETWORK_MESSAGE =
+  "We couldn't reach the server. Please check your connection and try again.";
+
+function isPlainSentence(s: string): boolean {
+  return (
+    s.length > 0 &&
+    s.length <= 200 &&
+    !/[{}<>[\]]|[A-Z0-9]+_[A-Z0-9_]+|Traceback|Exception|\bNone\b/.test(s)
+  );
+}
+
+export function friendlyMessage(status: number, detail?: string): string {
+  const plain = detail && isPlainSentence(detail) ? detail : undefined;
+  if (status === 0) return NETWORK_MESSAGE;
+  if (status === 401) return "Your session has ended. Please sign in again.";
+  if (status === 403) return plain ?? "You don't have permission to do that.";
+  if (status === 404) return "We couldn't find that. It may have been moved or deleted.";
+  if (status === 409) return "This document was changed by someone else. Please reload and try again.";
+  if (status === 413) return "That file is too large to upload.";
+  if (status === 429) return "Too many requests just now. Please wait a minute and try again.";
+  if (status >= 500) return "Something went wrong on our side. Please try again shortly.";
+  return plain ?? "That didn't work. Please check and try again.";
+}
+
+export async function friendlyError(res: Response): Promise<ApiError> {
+  let detail: string | undefined;
+  try {
+    const text = await res.text();
+    try {
+      const body = JSON.parse(text) as { detail?: unknown; message?: unknown; error?: unknown };
+      const d = body?.detail ?? body?.message ?? body?.error;
+      if (typeof d === "string") detail = d;
+    } catch {
+      // Not JSON: fall back to the status-based sentence.
+    }
+  } catch {
+    // Body unreadable: same fallback.
+  }
+  return new ApiError(friendlyMessage(res.status, detail), res.status, detail);
+}
+
+export function errorText(e: unknown): string {
+  if (e instanceof ApiError) return e.message;
+  if (e instanceof TypeError) return NETWORK_MESSAGE;
+  if (e instanceof Error && e.message) return e.message;
+  return "Something went wrong. Please try again.";
+}
+
+export function isUnauthorized(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 401;
+}
+
+export type AuthConfig = {
+  auth_mode: string;
+  access_code_required: boolean;
+  email_delivery: "email" | "link" | string;
+};
+
+// X-CFC-User only identifies the caller in "personas" mode. In "magic-link"
+// mode the backend ignores it for identity but still keys rate limits on it,
+// so sending it there would put every user into one shared bucket.
+let knownAuthMode: string | null = null;
+let authModePromise: Promise<string> | null = null;
+
+export function rememberAuthMode(mode: string | null | undefined): void {
+  if (!mode) return;
+  knownAuthMode = mode;
+  authModePromise = Promise.resolve(mode);
+}
+
+async function resolveAuthMode(): Promise<string> {
+  if (knownAuthMode) return knownAuthMode;
+  if (!authModePromise) {
+    authModePromise = (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/auth/config`, { cache: "no-store" });
+        if (res.ok) {
+          const cfg = (await res.json()) as Partial<AuthConfig>;
+          if (cfg.auth_mode) {
+            knownAuthMode = cfg.auth_mode;
+            return cfg.auth_mode;
+          }
+        }
+        if (res.status === 404) {
+          knownAuthMode = "personas";
+          return "personas";
+        }
+      } catch {
+        // Fall through without caching so the next request retries.
+      }
+      authModePromise = null;
+      return "personas";
+    })();
+  }
+  return authModePromise;
+}
+
+async function identityHeaders(persona: PersonaKey | null): Promise<Record<string, string>> {
+  if (!persona) return {};
+  const mode = await resolveAuthMode();
+  return mode === "magic-link" ? {} : { "X-CFC-User": PERSONAS[persona].header };
+}
+
+async function send(
+  path: string,
+  persona: PersonaKey | null,
+  init: RequestInit = {},
+): Promise<Response> {
+  const id = await identityHeaders(persona);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      cache: "no-store",
+      credentials: "include",
+      ...init,
+      headers: { ...id, ...((init.headers as Record<string, string> | undefined) ?? {}) },
+    });
+  } catch (e) {
+    if (e instanceof Error && e.name === "AbortError") throw e;
+    throw new ApiError(NETWORK_MESSAGE, 0);
+  }
+  if (!res.ok) throw await friendlyError(res);
+  return res;
 }
 
 export type DraftSession = {
@@ -115,6 +238,8 @@ export type DraftRecord = {
   current_version: number;
   division_code?: string;
   maker_employee_id?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
   versions?: Array<{
     version: number;
     trigger: string;
@@ -166,25 +291,11 @@ export type InboxItem = {
   open_threads: number;
 };
 
-function headers(persona: PersonaKey, extra?: HeadersInit): HeadersInit {
-  return {
-    "X-CFC-User": PERSONAS[persona].header,
-    ...extra,
-  };
-}
-
 export async function apiGet<T>(
   path: string,
   persona: PersonaKey = "arpit",
 ): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: headers(persona),
-    cache: "no-store",
-    credentials: "include",
-  });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${await res.text()}`);
-  }
+  const res = await send(path, persona);
   return res.json() as Promise<T>;
 }
 
@@ -193,17 +304,13 @@ export async function apiJson<T>(
   persona: PersonaKey,
   init: RequestInit,
 ): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await send(path, persona, {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      ...headers(persona, init.headers),
+      ...((init.headers as Record<string, string> | undefined) ?? {}),
     },
-    credentials: "include",
   });
-  if (!res.ok) {
-    throw new Error(`${res.status} ${await res.text()}`);
-  }
   return res.json() as Promise<T>;
 }
 
@@ -250,12 +357,11 @@ export async function listVersions(draftId: string, persona: PersonaKey) {
   }>(`/drafts/${draftId}/versions`, persona);
 }
 
-export async function fetchDraftFile(draftId: string): Promise<File> {
-  const res = await fetch(`${API_BASE}/drafts/${draftId}/file`, {
-    cache: "no-store",
-    credentials: "include",
-  });
-  if (!res.ok) throw new Error(`File load failed: ${res.status}`);
+export async function fetchDraftFile(
+  draftId: string,
+  persona: PersonaKey = "arpit",
+): Promise<File> {
+  const res = await send(`/drafts/${draftId}/file`, persona);
   const blob = await res.blob();
   return new File([blob], `${draftId}.docx`, {
     type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -275,16 +381,11 @@ export async function saveDraftFile(
       type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     }),
   );
-  const res = await fetch(`${API_BASE}/drafts/${draftId}/file`, {
+  const res = await send(`/drafts/${draftId}/file`, persona, {
     method: "PUT",
-    headers: {
-      "X-CFC-User": PERSONAS[persona].header,
-      "X-CFC-Save-Trigger": trigger,
-    },
+    headers: { "X-CFC-Save-Trigger": trigger },
     body: form,
-    credentials: "include",
   });
-  if (!res.ok) throw new Error(`Save failed: ${res.status} ${await res.text()}`);
   return res.json() as Promise<{
     ok: boolean;
     version: number;
@@ -313,6 +414,7 @@ export type CorpusHit = {
   score: number;
   kind?: string;
   by_kind?: Record<string, number>;
+  relevance?: number;
 };
 
 export async function corpusStats() {
@@ -324,10 +426,10 @@ export async function corpusStats() {
   }>("/corpus/stats");
 }
 
-export async function corpusSearch(query: string, limit = 8) {
+export async function corpusSearch(query: string, limit = 8, persona: PersonaKey = "arpit") {
   return apiJson<{ query: string; count: number; hits: CorpusHit[] }>(
     "/corpus/search",
-    "arpit",
+    persona,
     {
       method: "POST",
       body: JSON.stringify({ query, limit }),
@@ -376,17 +478,10 @@ export async function patchThread(
     raw?: Record<string, unknown> | null;
   },
 ) {
-  const res = await fetch(`${API_BASE}/drafts/${draftId}/threads/${threadId}`, {
+  return apiJson<ThreadRecord>(`/drafts/${draftId}/threads/${threadId}`, persona, {
     method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      "X-CFC-User": PERSONAS[persona].header,
-    },
     body: JSON.stringify(body),
-    credentials: "include",
   });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-  return res.json() as Promise<ThreadRecord>;
 }
 
 export async function syncThreads(
@@ -450,13 +545,7 @@ export async function uploadCorpusFile(
   if (opts?.title) form.append("title", opts.title);
   if (opts?.ministry) form.append("ministry", opts.ministry);
   if (opts?.domain) form.append("domain", opts.domain);
-  const res = await fetch(`${API_BASE}/corpus/uploads`, {
-    method: "POST",
-    headers: { "X-CFC-User": PERSONAS[persona].header },
-    body: form,
-    credentials: "include",
-  });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  const res = await send("/corpus/uploads", persona, { method: "POST", body: form });
   return res.json() as Promise<{
     ok: boolean;
     storage_key: string;
@@ -487,13 +576,7 @@ export async function uploadCorpusTemplate(
   const form = new FormData();
   form.append("file", file);
   form.append("template_code", templateCode);
-  const res = await fetch(`${API_BASE}/corpus/templates`, {
-    method: "POST",
-    headers: { "X-CFC-User": PERSONAS[persona].header },
-    body: form,
-    credentials: "include",
-  });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  const res = await send("/corpus/templates", persona, { method: "POST", body: form });
   return res.json() as Promise<{ ok: boolean; template_code: string; path: string }>;
 }
 
@@ -597,10 +680,25 @@ export async function getGraphPreview(persona: PersonaKey, docId: string) {
   );
 }
 
+export type AgentErrorCode =
+  | "auth"
+  | "quota"
+  | "rate_limit"
+  | "provider"
+  | "doc_worker"
+  | "timeout"
+  | "unknown";
+
 export type AgentFrame =
   | { type: "start"; draft_id: string; version: number; providers: string[]; tracked: boolean; can_run_agent_mutate: boolean }
-  | { type: "preset"; name: string; max_turns?: number }
+  | {
+      type: "preset";
+      name: string;
+      max_turns?: number;
+      sections?: { label: string; title: string }[];
+    }
   | { type: "token"; text: string }
+  | { type: "text"; text: string }
   | { type: "tool_call"; id: string; name: string; args: Record<string, unknown> }
   | { type: "tool_result"; id: string; name: string; result: Record<string, unknown> }
   | { type: "draft_updated"; version: number; sha256: string; tracked: boolean }
@@ -618,57 +716,71 @@ export type AgentFrame =
       rationale?: string;
     }
   | { type: "done"; reason: string; sections_generated?: string[]; sections_failed?: string[] }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; code?: AgentErrorCode | string };
+
+export type AgentChatBody = {
+  prompt: string;
+  provider: string;
+  api_key?: string;
+  model?: string;
+  preset?: string;
+  preset_args?: Record<string, unknown>;
+};
+
+function parseSseEvent(raw: string): AgentFrame | null {
+  const data = raw
+    .split("\n")
+    .filter((l) => l.startsWith("data:"))
+    .map((l) => l.slice(5).replace(/^ /, ""))
+    .join("\n")
+    .trim();
+  if (!data) return null;
+  try {
+    return JSON.parse(data) as AgentFrame;
+  } catch {
+    return null;
+  }
+}
 
 export async function streamAgentChat(
   draftId: string,
   persona: PersonaKey,
-  body: {
-    prompt: string;
-    provider: string;
-    api_key?: string;
-    model?: string;
-    preset?: string;
-    preset_args?: Record<string, unknown>;
-  },
+  body: AgentChatBody,
   onFrame: (frame: AgentFrame) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/drafts/${draftId}/agent/chat`, {
+  const res = await send(`/drafts/${draftId}/agent/chat`, persona, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-CFC-User": PERSONAS[persona].header,
       Accept: "text/event-stream",
     },
     body: JSON.stringify(body),
     signal,
-    credentials: "include",
   });
-  if (!res.ok || !res.body) {
-    throw new Error(`${res.status} ${await res.text()}`);
-  }
+  if (!res.body) throw new ApiError(friendlyMessage(500), 500);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
+  const drain = () => {
     let idx: number;
     while ((idx = buf.indexOf("\n\n")) !== -1) {
       const raw = buf.slice(0, idx);
       buf = buf.slice(idx + 2);
-      const line = raw.split("\n").find((l) => l.startsWith("data:"));
-      if (!line) continue;
-      try {
-        const frame = JSON.parse(line.slice(5).trim()) as AgentFrame;
-        onFrame(frame);
-      } catch {
-        // skip malformed
-      }
+      const frame = parseSseEvent(raw);
+      if (frame) onFrame(frame);
     }
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf = (buf + dec.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+    drain();
   }
+  buf += dec.decode();
+  drain();
+  const tail = parseSseEvent(buf);
+  if (tail) onFrame(tail);
 }
 
 export type DiffBlock = {
@@ -701,6 +813,12 @@ export async function fetchDraftDiff(
   );
 }
 
+export type ServerLlm = {
+  provider: string;
+  model: string;
+  label?: string;
+};
+
 export type CurrentUser = {
   id: string;
   name: string;
@@ -709,50 +827,77 @@ export type CurrentUser = {
   cfc_role: string;
   division_code?: string | null;
   is_admin?: boolean;
-  /** "personas" (X-CFC-User header still drives identity — dev/demo mode)
-   * or "magic-link" (only the real session cookie counts, header ignored).
-   * The persona switcher only means anything in "personas" mode. */
+  /** "personas": the X-CFC-User header drives identity (dev/demo).
+   * "magic-link": only the session cookie counts. */
   auth_mode?: string;
+  cross_division_read?: boolean;
+  server_llm?: ServerLlm | null;
 };
+
+export function isPersonasMode(me: CurrentUser | null | undefined): boolean {
+  return me?.auth_mode === "personas";
+}
+
+export async function getAuthConfig(): Promise<AuthConfig | null> {
+  try {
+    const res = await fetch(`${API_BASE}/auth/config`, { cache: "no-store" });
+    if (!res.ok) return null;
+    const cfg = (await res.json()) as AuthConfig;
+    rememberAuthMode(cfg.auth_mode);
+    return cfg;
+  } catch {
+    return null;
+  }
+}
 
 export async function requestMagicLink(
   email: string,
+  accessCode?: string,
 ): Promise<{ ok: boolean; delivery?: string; link?: string }> {
-  const res = await fetch(`${API_BASE}/auth/magic-link`, {
+  const code = accessCode?.trim();
+  const res = await send("/auth/magic-link", null, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
-    credentials: "include",
+    body: JSON.stringify(code ? { email, access_code: code } : { email }),
   });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json();
 }
 
 export async function verifyMagicLink(
   token: string,
 ): Promise<{ ok: boolean; email: string; ttl_hours: number }> {
-  const res = await fetch(
-    `${API_BASE}/auth/verify?token=${encodeURIComponent(token)}`,
-    { credentials: "include" },
-  );
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  const res = await send(`/auth/verify?token=${encodeURIComponent(token)}`, null);
   return res.json();
 }
 
 export async function logout(): Promise<void> {
-  await fetch(`${API_BASE}/auth/logout`, {
-    method: "POST",
-    credentials: "include",
-  });
+  try {
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+    });
+  } catch {
+    // Signing out locally still proceeds to the login page.
+  }
 }
 
+/** null when signed out (401/403); throws ApiError for anything else
+ * (server down, network), so callers can tell the two apart. */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
-  const res = await fetch(`${API_BASE}/me`, {
-    cache: "no-store",
-    credentials: "include",
-  });
-  if (!res.ok) return null;
-  return res.json();
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/me`, {
+      cache: "no-store",
+      credentials: "include",
+    });
+  } catch {
+    throw new ApiError(NETWORK_MESSAGE, 0);
+  }
+  if (res.status === 401 || res.status === 403) return null;
+  if (!res.ok) throw await friendlyError(res);
+  const me = (await res.json()) as CurrentUser;
+  rememberAuthMode(me.auth_mode);
+  return me;
 }
 
 export async function ragQuery(

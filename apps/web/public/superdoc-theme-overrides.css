@@ -1,16 +1,11 @@
 /*
- * Independent theme picker for SuperDoc's own chrome (toolbar, menus,
- * comments panel, the document page/canvas) — deliberately separate from
- * the app's own Paper/Night theme (see globals.css). Scoped to whichever
- * element carries data-superdoc-theme (the editor's container div in
- * DocumentStudio.tsx), so it only affects that subtree via normal CSS
- * custom-property inheritance, never the surrounding app chrome.
+ * Studio styling for SuperDoc's own chrome (toolbar, menus, comments) and
+ * the page, scoped to the element carrying data-superdoc-theme (the editor
+ * host in DocumentStudio.tsx) so it never affects the surrounding app.
  *
- * Overrides SuperDoc's own semantic tier (superdoc-style.css's "5-variable
- * theme" plus the handful of layout/canvas variables that cascade from it)
- * with literal values — SuperDoc's bundled presets hardcode
- * --sd-layout-page-bg, so reusing them isn't an option; these are written
- * fresh per theme instead.
+ * Only "Paper" is offered. The Night and Sepia variants were removed:
+ * SuperDoc has no page-text variable, so a dark page showed black text on a
+ * near-black page.
  */
 
 [data-superdoc-theme="light"] {
@@ -21,42 +16,36 @@
   --sd-ui-border: #e2ddd0;
   --sd-ui-action: #0079af;
   --sd-ui-action-hover: #005f8a;
-  --sd-layout-page-bg: #ffffff;
   --sd-surface-canvas: #f0ede4;
   --sd-surface-selected: #dceefa;
   --sd-text-secondary: #6b6558;
   --sd-border-subtle: #e2ddd0;
   --sd-border-focus: #0079af;
+  /* A white sheet with a soft shadow, sitting on the host's desk colour. */
+  --sd-layout-page-bg: #ffffff;
+  --sd-layout-page-shadow: 0 1px 3px rgba(33, 30, 25, 0.12), 0 8px 28px rgba(33, 30, 25, 0.1);
 }
 
-[data-superdoc-theme="dark"] {
-  --sd-ui-text: #f2f0ea;
-  --sd-ui-text-muted: #9299a3;
-  --sd-ui-bg: #1b2028;
-  --sd-ui-hover-bg: #242b34;
-  --sd-ui-border: #333c48;
-  --sd-ui-action: #1b9bd8;
-  --sd-ui-action-hover: #3fb2e8;
-  --sd-layout-page-bg: #1e2226;
-  --sd-surface-canvas: #0b0e12;
-  --sd-surface-selected: rgba(27, 155, 216, 0.25);
-  --sd-text-secondary: #9299a3;
-  --sd-border-subtle: #242b34;
-  --sd-border-focus: #1b9bd8;
+[data-superdoc-theme] .superdoc-toolbar-container {
+  flex-shrink: 0;
+  background: var(--sd-ui-bg);
+  border-bottom: 1px solid var(--sd-ui-border);
 }
 
-[data-superdoc-theme="sepia"] {
-  --sd-ui-text: #3b2f1f;
-  --sd-ui-text-muted: #8a7355;
-  --sd-ui-bg: #f4ecd8;
-  --sd-ui-hover-bg: #ead9b8;
-  --sd-ui-border: #d8c39a;
-  --sd-ui-action: #8a5a2b;
-  --sd-ui-action-hover: #6e4620;
-  --sd-layout-page-bg: #fbf3e1;
-  --sd-surface-canvas: #e8dcc0;
-  --sd-surface-selected: rgba(138, 90, 43, 0.18);
-  --sd-text-secondary: #8a7355;
-  --sd-border-subtle: #ead9b8;
-  --sd-border-focus: #8a5a2b;
+/* The wrapper's loading slot fills the host so the skeleton covers it. */
+[data-superdoc-theme] .superdoc-loading-container {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+}
+
+/* The desk the page sits on. */
+[data-superdoc-theme="light"] {
+  background: var(--sd-surface-canvas);
+}
+
+/* Centre the page column on the desk; "safe" keeps a page wider than the desk
+   scrollable instead of losing its left edge. */
+[data-superdoc-theme] .superdoc {
+  justify-content: safe center;
 }

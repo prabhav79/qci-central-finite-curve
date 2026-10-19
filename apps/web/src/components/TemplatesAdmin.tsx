@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   PERSONAS,
-  type CurrentUser,
   type PersonaKey,
   type TemplateItem,
-  getCurrentUser,
+  errorText,
   listTemplates,
   uploadCorpusTemplate,
 } from "@/lib/cfcApi";
+import { formatDateTimeIST } from "@/lib/dates";
+import { useCurrentUser } from "@/lib/useCurrentUser";
 import { EmptyState } from "@/components/EmptyState";
 
 function fmtBytes(n: number): string {
@@ -26,10 +27,7 @@ export function TemplatesAdmin() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const [me, setMe] = useState<CurrentUser | null>(null);
-  useEffect(() => {
-    void getCurrentUser().then(setMe);
-  }, []);
+  const { me, error: meError } = useCurrentUser();
   // In personas (dev/demo) mode the dropdown IS the identity, so honor its
   // pick; once magic-link is the real auth path, admin status must come
   // from the real signed-in user, not a client-side dropdown default.
@@ -42,15 +40,15 @@ export function TemplatesAdmin() {
         const res = await listTemplates(p);
         setItems(res.items);
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(errorText(e));
       }
     },
     [persona],
   );
 
   useEffect(() => {
-    void load(persona);
-  }, [persona, load]);
+    if (me) void load(persona);
+  }, [me, persona, load]);
 
   async function upload() {
     const f = fileRef.current?.files?.[0];
@@ -72,7 +70,7 @@ export function TemplatesAdmin() {
       if (fileRef.current) fileRef.current.value = "";
       await load(persona);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -103,8 +101,10 @@ export function TemplatesAdmin() {
         )}
       </header>
 
-      {error && (
-        <div className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-3 text-sm text-status-rejected-text">{error}</div>
+      {(error || meError) && (
+        <div className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-3 text-sm text-status-rejected-text">
+          {error ?? meError}
+        </div>
       )}
       {status && (
         <div className="rounded-lg border border-status-approved-border bg-status-approved-surface p-3 text-sm text-status-approved-text">
@@ -130,7 +130,7 @@ export function TemplatesAdmin() {
               <div className="min-w-0 flex-1">
                 <div className="font-mono text-text">{t.template_code}</div>
                 <div className="text-[11px] text-text-muted">
-                  {t.filename} · {fmtBytes(t.bytes)} · modified {t.modified_at.slice(0, 19)}
+                  {t.filename} · {fmtBytes(t.bytes)} · updated {formatDateTimeIST(t.modified_at)}
                 </div>
               </div>
               <span className="rounded bg-surface-sunken px-2 py-0.5 font-mono text-[10px] text-text-muted">

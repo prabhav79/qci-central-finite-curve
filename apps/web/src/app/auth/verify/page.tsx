@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { verifyMagicLink } from "@/lib/cfcApi";
+import { ApiError, errorText, verifyMagicLink } from "@/lib/cfcApi";
 import { AuthShell } from "@/components/AuthShell";
 
 function Spinner() {
@@ -31,7 +31,7 @@ function VerifyInner() {
   useEffect(() => {
     const token = params.get("token");
     if (!token) {
-      setError("Missing sign-in token.");
+      setError("This sign-in link isn't complete. Please sign in again.");
       return;
     }
     let cancelled = false;
@@ -41,7 +41,12 @@ function VerifyInner() {
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Sign-in link is invalid or expired.");
+          const network = err instanceof ApiError && (err.status === 0 || err.status >= 500);
+          setError(
+            network
+              ? errorText(err)
+              : "This sign-in link has expired or was already used. Please sign in again.",
+          );
         }
       });
     return () => {

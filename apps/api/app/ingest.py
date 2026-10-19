@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,7 +34,7 @@ from dotenv import load_dotenv
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from . import jev_client
+from . import corpus_clean, jev_client
 from .chunking import chunk_text
 from .corpus_db import compute_edges_for_document
 from .db import IS_POSTGRES, ROOT, SessionLocal
@@ -49,8 +50,10 @@ load_dotenv(ROOT / ".env", override=True)
 load_dotenv(override=True)
 
 PROCESSED_DIR = ROOT / "data" / "processed"
+EXTRACTED_TEXT_DIR = ROOT / "data" / "extracted_text"
 WORK_ORDERS_DIR = ROOT / "Work Orders"
-UPLOADS_DIR = ROOT / "storage" / "dev" / "uploads"
+# Must match where main.py's upload endpoint writes (storage.py's namespace).
+UPLOADS_DIR = ROOT / "storage" / os.environ.get("CFC_STORAGE_NAMESPACE", "dev") / "uploads"
 DEFAULT_DIVISION = "PPID"
 
 DOMAIN_HINTS: list[tuple[str, str]] = [
@@ -129,6 +132,37 @@ _MINISTRY_OPTIONS = {
 }
 
 
+def _ministry_criteria() -> dict[str, str | None]:
+    names = corpus_clean.ministry_options()
+    if not names:
+        return dict(_MINISTRY_OPTIONS)
+    return {**{n: None for n in names}, "Unknown": "None of the above clients is clearly indicated"}
+
+
+def _curate(ed: ExtractedDoc) -> ExtractedDoc:
+    """Apply reviewed metadata (data/corpus_metadata.csv) over whatever the
+    extractor guessed. The CSV is the source of truth for titles, client,
+    dates and sector; Jev/keyword guesses only fill gaps for new documents."""
+    meta = corpus_clean.metadata_for(ed.doc_id)
+    if not meta:
+        return ed
+    if (meta.get("title") or "").strip():
+        ed.title = meta["title"].strip()
+    if (meta.get("ministry") or "").strip():
+        ed.ministry = meta["ministry"].strip()
+    if (meta.get("date") or "").strip():
+        ed.date = meta["date"].strip()
+    if (meta.get("value_inr") or "").strip():
+        try:
+            ed.value_inr = float(meta["value_inr"])
+        except ValueError:
+            pass
+    tags = [t.strip() for t in ((meta.get("engagement") or ""), (meta.get("sector") or "")) if t and t.strip()]
+    if tags:
+        ed.domains = tags
+    return ed
+
+
 def _jev_classify(name: str, text: str) -> tuple[list[str] | None, str | None, float | None]:
     """Batched domain (one noul per DOMAIN_HINTS entry) + ministry (one
     choice) + injection-screen (one noul, item 10) classification via Jev,
@@ -153,7 +187,10 @@ def _jev_classify(name: str, text: str) -> tuple[list[str] | None, str | None, f
     if not text.strip() or not jev_client.is_configured():
         return None, None, None
 
-    state = f"Filename: {name}\n\n{text[:4000]}"
+    # The "About QCI" passage mentions DPIIT and sits near the top of most
+    # proposals — left in, it made Jev label unrelated proposals "DPIIT".
+    state = f"Filename: {name}\n\n{corpus_clean.strip_boilerplate(text)[:4000]}"
+    ministry_options = _ministry_criteria()
     questions: dict[str, dict] = {
         f"domain::{key}": {
             "type": "noul",
@@ -163,8 +200,8 @@ def _jev_classify(name: str, text: str) -> tuple[list[str] | None, str | None, f
     }
     questions["ministry"] = {
         "type": "choice",
-        "instructions": "Which ministry/department does this work order relate to?",
-        "criteria": dict(_MINISTRY_OPTIONS),
+        "instructions": "Which client ministry, department or government is this document written for?",
+        "criteria": ministry_options,
     }
     questions["injection"] = {
         "type": "noul",
@@ -185,7 +222,7 @@ def _jev_classify(name: str, text: str) -> tuple[list[str] | None, str | None, f
             if answers.get(f"domain::{key}", {}).get("noul", 0) >= 0.5
         ]
         ministry_answer = answers.get("ministry", {}).get("choice")
-        ministry = ministry_answer if ministry_answer in _MINISTRY_OPTIONS else None
+        ministry = ministry_answer if ministry_answer in ministry_options and ministry_answer != "Unknown" else None
         injection_score = answers.get("injection", {}).get("noul")
         injection_flag = float(injection_score) if isinstance(injection_score, (int, float)) else None
         return (domains or None), ministry, injection_flag
@@ -280,7 +317,11 @@ def _extract_processed_json(path: Path) -> ExtractedDoc:
     except (TypeError, ValueError):
         value_inr = 0.0
     title = str(meta.get("project_subject") or doc_id)
-    full_text = str(content.get("full_text") or "")
+    # The JSON's full_text is an LLM summary of the letter; its metadata
+    # (title, date, value) is good. Use the letter's own wording when we have
+    # it: the PDF text layer, else the OCR text for scanned PDFs.
+    verbatim = _verbatim_text(doc_id)
+    full_text = corpus_clean.clean_text(verbatim or str(content.get("full_text") or ""))
 
     # RunPulse's own meta.ministry/meta.domains are raw free text (not
     # canonicalized) — different files describe the same real ministry with
@@ -293,19 +334,35 @@ def _extract_processed_json(path: Path) -> ExtractedDoc:
     ministry = jev_ministry or _guess_ministry(title) or str(meta.get("ministry") or "Unknown")
     domains = jev_domains or _guess_domains(title, full_text) or list(meta.get("domains") or [])
 
-    return ExtractedDoc(
-        doc_id=doc_id,
-        title=title,
-        ministry=ministry,
-        date=meta.get("date"),
-        domains=domains,
-        deliverables=str(meta.get("deliverables") or ""),
-        full_text=full_text,
-        value_inr=value_inr,
-        source_path=_rel(path),
-        kind="processed_json",
-        injection_flag=injection_flag,
+    return _curate(
+        ExtractedDoc(
+            doc_id=doc_id,
+            title=title,
+            ministry=ministry,
+            date=meta.get("date"),
+            domains=domains,
+            # The summary's deliverables list is paraphrase; only chunk it when
+            # there's no verbatim text to ground on.
+            deliverables="" if verbatim else corpus_clean.clean_text(str(meta.get("deliverables") or "")),
+            full_text=full_text,
+            value_inr=value_inr,
+            source_path=_rel(path),
+            kind="processed_json",
+            injection_flag=injection_flag,
+        )
     )
+
+
+def _verbatim_text(doc_id: str) -> str:
+    pdfs = [p for p in WORK_ORDERS_DIR.rglob(f"{doc_id}.pdf")] if WORK_ORDERS_DIR.exists() else []
+    if pdfs:
+        text = _extract_pdf(pdfs[0])
+        if text.strip():
+            return text
+    txt = EXTRACTED_TEXT_DIR / f"{doc_id}.txt"
+    if txt.exists():
+        return txt.read_text(encoding="utf-8", errors="replace")
+    return ""
 
 
 def _extract_work_order(path: Path) -> ExtractedDoc:
@@ -321,20 +378,23 @@ def _extract_work_order(path: Path) -> ExtractedDoc:
     else:
         text = ""
         kind = "unknown"
+    text = corpus_clean.clean_text(text)
     jev_domains, jev_ministry, injection_flag = _jev_classify(path.name, text)
-    return ExtractedDoc(
-        doc_id=path.stem,
-        title=title,
-        ministry=jev_ministry or _guess_ministry(path.name),
-        date=None,
-        domains=jev_domains or _guess_domains(path.name, text),
-        deliverables="",
-        full_text=text[:60000],
-        value_inr=0.0,
-        source_path=_rel(path),
-        kind=kind,
-        runpulse_pages=pages,
-        injection_flag=injection_flag,
+    return _curate(
+        ExtractedDoc(
+            doc_id=path.stem,
+            title=title,
+            ministry=jev_ministry or _guess_ministry(path.name),
+            date=None,
+            domains=jev_domains or _guess_domains(path.name, text),
+            deliverables="",
+            full_text=text[:60000],
+            value_inr=0.0,
+            source_path=_rel(path),
+            kind=kind,
+            runpulse_pages=pages,
+            injection_flag=injection_flag,
+        )
     )
 
 
@@ -388,21 +448,27 @@ def _upsert_doc(
     visibility: str = "division_only",
 ) -> tuple[CorpusDocument, bool]:
     """Return (row, was_reingested)."""
-    raw_bytes = ed.full_text.encode("utf-8")
-    content_sha = _sha256(raw_bytes)
+    # Hash the metadata too, so a corrected title/date/client re-ingests the
+    # document instead of being skipped as "unchanged".
+    fingerprint = json.dumps(
+        [ed.full_text, ed.deliverables, ed.title, ed.ministry, ed.date, ed.value_inr, ed.domains],
+        ensure_ascii=False,
+        default=str,
+    )
+    content_sha = _sha256(fingerprint.encode("utf-8"))
 
     existing = s.execute(
         select(CorpusDocument).where(CorpusDocument.doc_id == ed.doc_id)
     ).scalar_one_or_none()
 
-    if existing and existing.content_sha256 == content_sha:
-        return existing, False
-
     # Priority: processed_json > work_order_docx > work_order_pdf/upload.
-    # Once we have a JSON extract for a doc_id, don't overwrite it with the
-    # raw file's poorer text.
+    # Checked before the unchanged-hash shortcut: a PDF and its JSON share a
+    # doc_id, and whichever wins must be the JSON (it carries the metadata).
     _priority = {"processed_json": 3, "work_order_docx": 2, "upload_docx": 2, "work_order_pdf": 1, "upload_pdf": 1}
     if existing and _priority.get(existing.kind, 0) > _priority.get(ed.kind, 0):
+        return existing, False
+
+    if existing and existing.content_sha256 == content_sha and existing.kind == ed.kind:
         return existing, False
 
     if existing:
@@ -461,7 +527,7 @@ def _build_chunks(
             CorpusChunk(
                 document_id=doc_row.id,
                 chunk_index=c.chunk_index,
-                section_label=c.section_label,
+                section_label="boilerplate" if corpus_clean.is_boilerplate(c.text) else c.section_label,
                 text=c.text,
                 token_set=None,  # BM25-lite computed at query time
                 division_code=doc_row.division_code,
@@ -471,6 +537,23 @@ def _build_chunks(
     return len(chunks)
 
 
+def _norm_stem(stem: str) -> str:
+    return re.sub(r"[\s_]+", " ", stem).strip().lower()
+
+
+def _duplicate_upload(session: Session, ed: ExtractedDoc) -> bool:
+    """An upload whose filename matches an already-ingested document with
+    only spaces/underscores changed (the upload slugifier does exactly that)
+    is the same document — don't index it twice."""
+    if not ed.kind.startswith("upload"):
+        return False
+    target = _norm_stem(ed.doc_id)
+    for (doc_id,) in session.execute(select(CorpusDocument.doc_id).where(CorpusDocument.doc_id != ed.doc_id)).all():
+        if _norm_stem(doc_id) == target:
+            return True
+    return False
+
+
 def ingest_one(
     session: Session,
     ed: ExtractedDoc,
@@ -478,6 +561,9 @@ def ingest_one(
     division_code: str = DEFAULT_DIVISION,
     visibility: str = "division_only",
 ) -> dict[str, object]:
+    if corpus_clean.excluded(ed.doc_id) or _duplicate_upload(session, ed):
+        log.info("ingest: skipping %s (excluded or duplicate)", ed.doc_id)
+        return {"doc_id": ed.doc_id, "changed": False, "chunks": 0, "kind": ed.kind}
     row, changed = _upsert_doc(session, ed, division_code=division_code, visibility=visibility)
     n_chunks = _build_chunks(session, row, ed) if changed else 0
     return {
@@ -663,10 +749,27 @@ def _extracted_doc_for_job(job: IngestionJob) -> ExtractedDoc:
     return _extract_work_order(path)
 
 
+_doc_locks_guard = threading.Lock()
+_doc_locks: dict[str, threading.Lock] = {}
+
+
+def _doc_lock(source_path: str) -> threading.Lock:
+    # A PDF and its processed_json share a doc_id (the file stem); without
+    # this, two workers can insert the same doc_id concurrently.
+    key = Path(source_path).stem
+    with _doc_locks_guard:
+        return _doc_locks.setdefault(key, threading.Lock())
+
+
 def process_job(session: Session, job: IngestionJob) -> None:
     """Extract → OCR-fallback → chunk → embed → upsert for one claimed job.
     Failure increments attempts and requeues (pending) until max_attempts,
     then parks the job as 'error' rather than retrying forever."""
+    with _doc_lock(job.source_path):
+        _process_job_locked(session, job)
+
+
+def _process_job_locked(session: Session, job: IngestionJob) -> None:
     try:
         ed = _extracted_doc_for_job(job)
         ingest_one(session, ed, division_code=job.division_code)
@@ -752,6 +855,12 @@ def reclassify_document(session: Session, doc: CorpusDocument) -> bool:
     jev_domains, jev_ministry, injection_flag = _jev_classify(doc.title, doc.full_text or "")
     ministry = jev_ministry or _guess_ministry(doc.title)
     domains = jev_domains or _guess_domains(doc.title, doc.full_text or "")
+    curated = corpus_clean.metadata_for(doc.doc_id) or {}
+    if (curated.get("ministry") or "").strip():
+        ministry = curated["ministry"].strip()
+    curated_tags = [t.strip() for t in (curated.get("engagement") or "", curated.get("sector") or "") if t.strip()]
+    if curated_tags:
+        domains = curated_tags
     # Unlike ministry/domains (which always fall back to a keyword guess),
     # there's no injection-screen heuristic to fall back to — a transient
     # Jev failure here must NOT clobber a previously-real score back to

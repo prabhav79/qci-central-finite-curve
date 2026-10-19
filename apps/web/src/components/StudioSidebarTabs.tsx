@@ -2,77 +2,90 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 
-type TabKey = "draft" | "generate" | "research" | "corpus" | "comments";
+type TabKey = "document" | "generate" | "research" | "comments" | "corpus";
 
-const TABS: { key: TabKey; label: string }[] = [
-  { key: "draft", label: "Draft" },
-  { key: "generate", label: "Generate" },
-  { key: "research", label: "Research" },
-  { key: "corpus", label: "Corpus" },
-  { key: "comments", label: "Comments" },
-];
+const LABELS: Record<TabKey, string> = {
+  document: "Document",
+  generate: "Generate",
+  research: "Research",
+  comments: "Comments",
+  corpus: "Corpus",
+};
 
 /**
- * Collapses the Studio sidebar's 9 previously-always-visible sections into 5
- * tabs, one purposeful panel at a time — see plan item 2b. Purely structural:
- * no visual/design changes, each panel keeps its own existing internal
- * scroll caps unchanged. Reuses the filter-button visual pattern already
- * established by ThreadsPanel's OPEN/RESOLVED/ALL group for consistency.
+ * The Studio sidebar: one purposeful panel at a time. The tab bar stays put
+ * and only the active panel scrolls. Corpus is passed only for admins.
  */
 export function StudioSidebarTabs({
-  draft,
+  overview,
   generate,
   research,
-  corpus,
   comments,
+  corpus,
   activateGenerateSignal,
 }: {
-  draft: ReactNode;
+  overview: ReactNode;
   generate: ReactNode;
   research: ReactNode;
-  corpus: ReactNode;
   comments: ReactNode;
-  /** Bump this (e.g. a counter) to force-switch to the Generate tab — used
-   * when a generation run auto-starts (e.g. "Create & generate" in
-   * NewDraftModal) so the user actually sees it happen instead of landing
-   * on Draft while it runs unseen behind a hidden tab. 0/undefined never
-   * triggers, so a fresh mount doesn't jump tabs on its own. */
+  corpus?: ReactNode;
+  /** Bump (e.g. a counter) to switch to the Generate tab when a generation
+   * run starts, so it never runs unseen behind another tab. 0 never fires. */
   activateGenerateSignal?: number;
 }) {
-  const [active, setActive] = useState<TabKey>("draft");
-  const content: Record<TabKey, ReactNode> = { draft, generate, research, corpus, comments };
+  const [active, setActive] = useState<TabKey>("document");
+  const content: Partial<Record<TabKey, ReactNode>> = { document: overview, generate, research, comments, corpus };
+  const tabs = (Object.keys(LABELS) as TabKey[]).filter((k) => k !== "corpus" || corpus != null);
 
   useEffect(() => {
     if (activateGenerateSignal) setActive("generate");
   }, [activateGenerateSignal]);
 
+  useEffect(() => {
+    if (active === "corpus" && corpus == null) setActive("document");
+  }, [active, corpus]);
+
   return (
-    <div>
-      <div className="mb-3 flex gap-1 rounded-lg bg-surface-sunken p-1 text-xs">
-        {TABS.map((t) => (
+    <div className="flex h-full min-h-0 flex-col">
+      <div
+        role="tablist"
+        aria-label="Document tools"
+        className="m-2 mb-0 flex shrink-0 gap-1 overflow-x-auto rounded-lg bg-surface-sunken p-1 text-[13px]"
+      >
+        {tabs.map((key) => (
           <button
-            key={t.key}
+            key={key}
+            id={`studio-tab-${key}`}
             type="button"
-            onClick={() => setActive(t.key)}
-            className={`min-w-0 flex-1 rounded-md px-1.5 py-2 font-medium transition-colors ${
-              active === t.key
+            role="tab"
+            aria-selected={active === key}
+            aria-controls={`studio-panel-${key}`}
+            onClick={() => setActive(key)}
+            className={`flex-1 whitespace-nowrap rounded-md px-2 py-1.5 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-focus-ring ${
+              active === key
                 ? "bg-accent text-white shadow-sm"
                 : "text-text-muted hover:bg-surface-raised hover:text-text"
             }`}
           >
-            {t.label}
+            {LABELS[key]}
           </button>
         ))}
       </div>
-      {/* All five stay mounted (just hidden) rather than conditionally
-       * rendering only the active one — switching away from "Generate"
-       * mid-stream must not unmount AgentPanel and lose its in-flight
-       * progress; CSS visibility is cheap for content this size. */}
-      {TABS.map((t) => (
-        <div key={t.key} className={active === t.key ? "" : "hidden"}>
-          {content[t.key]}
-        </div>
-      ))}
+      {/* Every panel stays mounted (just hidden) so switching away from
+       * Generate mid-run never unmounts it and loses its progress. */}
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {tabs.map((key) => (
+          <div
+            key={key}
+            id={`studio-panel-${key}`}
+            role="tabpanel"
+            aria-labelledby={`studio-tab-${key}`}
+            hidden={active !== key}
+          >
+            {content[key]}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

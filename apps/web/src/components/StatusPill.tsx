@@ -12,16 +12,29 @@ const TONE: Record<string, string> = {
     "bg-status-changes-surface text-status-changes-text border border-status-changes-border",
 };
 
-/** Canonical status-color source of truth — reused everywhere a draft's
- * workflow status is displayed, so the vocabulary never drifts out of sync. */
+export const STATUS_LABELS: Record<string, string> = {
+  DRAFT: "Draft",
+  PENDING_L1_REVIEW: "Awaiting first review",
+  APPROVED_L1_PENDING_L2: "Awaiting final approval",
+  FINAL_APPROVED: "Approved",
+  REJECTED: "Rejected",
+  CHANGES_REQUESTED: "Changes requested",
+};
+
+export function statusLabel(status: string): string {
+  return STATUS_LABELS[status] ?? "Draft";
+}
+
+/** Canonical status pill, reused everywhere a document's workflow status is
+ * shown so the wording and colours never drift apart. */
 export function StatusPill({ status }: { status: string }) {
   return (
     <span
-      className={`rounded px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+      className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ${
         TONE[status] ?? "bg-status-draft-surface text-status-draft-text"
       }`}
     >
-      {status.replace(/_/g, " ")}
+      {statusLabel(status)}
     </span>
   );
 }

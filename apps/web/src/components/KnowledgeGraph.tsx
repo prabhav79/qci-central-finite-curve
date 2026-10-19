@@ -6,22 +6,24 @@ import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PERSONAS,
-  type CurrentUser,
   type GraphNode,
   type GraphPreviewResponse,
   type PersonaKey,
-  getCurrentUser,
+  errorText,
   getGraphChildren,
   getGraphPreview,
+  isPersonasMode,
 } from "@/lib/cfcApi";
+import { formatDateIST } from "@/lib/dates";
+import { useCurrentUser } from "@/lib/useCurrentUser";
 
 // react-force-graph-2d touches window/canvas at import time, so it must load
 // client-side only (Next.js App Router server components can't see it).
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-full items-center justify-center text-xs text-text-muted">
-      Loading graph engine…
+    <div className="flex h-full items-center justify-center text-[13px] text-text-muted">
+      Loading…
     </div>
   ),
 });
@@ -46,21 +48,32 @@ type GLink = { source: string; target: string };
 
 const ROOT_ID = "__root__";
 
-// Canvas can't consume CSS variables directly, so these mirror the design
-// tokens' literal values (globals.css) for each theme rather than reusing
-// the old ad-hoc amber/cyan/violet set.
-const NODE_COLOR_LIGHT: Record<NodeType, string> = {
-  root: "#c9c2ae", // --color-border-strong
-  ministry: "#0079af", // --color-accent
-  domain: "#d9691e", // --color-highlight
-  document: "#6b2e3a", // --color-agent
-};
-const NODE_COLOR_DARK: Record<NodeType, string> = {
-  root: "#333c48",
-  ministry: "#1b9bd8",
-  domain: "#e8873f",
-  document: "#b5566a",
-};
+type Palette = { node: Record<NodeType, string>; bg: string; text: string; link: string };
+
+// Canvas can't consume CSS variables, so the design tokens are read once the
+// page has mounted (and again on theme change). Reading them during render
+// would differ between server and client and break hydration.
+function readPalette(): Palette {
+  const css = window.getComputedStyle(document.documentElement);
+  const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+  return {
+    node: {
+      root: v("--color-border-strong", "gray"),
+      ministry: v("--color-accent", "steelblue"),
+      domain: v("--color-highlight", "darkorange"),
+      document: v("--color-agent", "brown"),
+    },
+    bg: v("--color-surface-sunken", "whitesmoke"),
+    text: v("--color-text", "black"),
+    link: v("--color-border-strong", "gray"),
+  };
+}
+
+const LEGEND: { type: Exclude<NodeType, "root">; label: string; dot: string }[] = [
+  { type: "ministry", label: "Ministry", dot: "bg-accent" },
+  { type: "domain", label: "Topic", dot: "bg-highlight" },
+  { type: "document", label: "Document", dot: "bg-agent" },
+];
 
 const NODE_RADIUS: Record<NodeType, number> = {
   root: 7,
@@ -84,7 +97,7 @@ function toGNode(n: GraphNode): GNode {
 function rootNode(): GNode {
   return {
     id: ROOT_ID,
-    label: "Corpus",
+    label: "QCI Knowledge Base",
     type: "root",
     count: null,
     doc_id: null,
@@ -108,16 +121,13 @@ type PreviewState =
  */
 export function KnowledgeGraph() {
   const [persona, setPersona] = useState<PersonaKey>("arpit");
-  const [me, setMe] = useState<CurrentUser | null>(null);
-  useEffect(() => {
-    void getCurrentUser().then(setMe);
-  }, []);
+  const { me, error: meError } = useCurrentUser();
   const { resolvedTheme } = useTheme();
-  const isDark = resolvedTheme === "dark";
-  const nodeColor = isDark ? NODE_COLOR_DARK : NODE_COLOR_LIGHT;
-  const canvasBg = isDark ? "#0b0e12" : "#f0ede4"; // --color-surface-sunken
-  const canvasText = isDark ? "#f2f0ea" : "#211e19"; // --color-text
-  const canvasLink = isDark ? "rgba(242,240,234,0.25)" : "rgba(33,30,25,0.2)";
+  const [palette, setPalette] = useState<Palette | null>(null);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setPalette(readPalette()));
+    return () => cancelAnimationFrame(id);
+  }, [resolvedTheme]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [dims, setDims] = useState({ width: 0, height: 0 });
@@ -158,7 +168,7 @@ export function KnowledgeGraph() {
         nodes.map((n) => n.id),
       );
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setLoading(ROOT_ID, false);
       setVersion((v) => v + 1);
@@ -166,9 +176,9 @@ export function KnowledgeGraph() {
   }, [setLoading]);
 
   useEffect(() => {
-    void loadRoot(persona);
+    if (me) void loadRoot(persona);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [persona]);
+  }, [me, persona]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -193,7 +203,7 @@ export function KnowledgeGraph() {
         setPreview({
           status: "error",
           docId,
-          message: e instanceof Error ? e.message : String(e),
+          message: errorText(e),
         });
       }
     },
@@ -227,7 +237,7 @@ export function KnowledgeGraph() {
           nodes.map((n) => n.id),
         );
       } catch (e) {
-        setError(`Could not expand "${node.label}": ${e instanceof Error ? e.message : String(e)}`);
+        setError(`Couldn't open "${node.label}". ${errorText(e)}`);
       } finally {
         setLoading(node.id, false);
         setVersion((v) => v + 1);
@@ -276,26 +286,28 @@ export function KnowledgeGraph() {
   const isEmpty = !loadingIds.has(ROOT_ID) && graphData.nodes.length <= 1;
 
   return (
-    <div className="flex h-[calc(100vh-6rem)] flex-col gap-3 p-4 text-text">
-      <header className="flex flex-wrap items-baseline gap-3">
-        <h1 className="text-xl font-semibold">Knowledge graph</h1>
-        <p className="max-w-xl text-xs text-text-muted">
-          Ministries → domains → documents → related documents. Click a node to expand it;
-          click again to collapse. Silo-scoped to your division; SG / Admin see all boards.
-        </p>
+    <div className="flex h-full min-h-[560px] flex-col gap-3 p-4 text-text">
+      <header className="flex flex-wrap items-end gap-3">
+        <div>
+          <h1 className="font-display text-2xl font-medium tracking-tight">Knowledge graph</h1>
+          <p className="mt-1 max-w-xl text-sm text-text-muted">
+            Explore QCI&apos;s past work by ministry and topic. Click a circle to open it; click it
+            again to close it.
+          </p>
+        </div>
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
             onClick={() => void loadRoot(persona)}
-            className="rounded-lg border border-border-strong px-3 py-1 text-xs text-text transition-colors hover:bg-surface-sunken"
+            className="rounded-lg border border-border-strong px-3 py-1.5 text-[13px] text-text transition-colors hover:bg-surface-sunken"
           >
             Reset
           </button>
-          {me?.auth_mode === "personas" && (
-            <label className="text-xs text-text-muted">
-              Persona
+          {isPersonasMode(me) && (
+            <label className="text-[13px] text-text-muted">
+              Viewing as
               <select
-                className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-sm text-text"
+                className="ml-2 rounded-lg border border-border-strong bg-surface-raised px-2 py-1 text-[13px] text-text"
                 value={persona}
                 onChange={(e) => setPersona(e.target.value as PersonaKey)}
               >
@@ -310,21 +322,18 @@ export function KnowledgeGraph() {
         </div>
       </header>
 
-      <div className="flex flex-wrap items-center gap-3 text-[10px] text-text-muted">
-        {(["ministry", "domain", "document"] as const).map((t) => (
-          <span key={t} className="flex items-center gap-1">
-            <span
-              className="inline-block h-2 w-2 rounded-full"
-              style={{ backgroundColor: nodeColor[t] }}
-            />
-            <span className="uppercase tracking-wide">{t}</span>
+      <div className="flex flex-wrap items-center gap-4 text-[13px] text-text-muted">
+        {LEGEND.map((l) => (
+          <span key={l.type} className="flex items-center gap-1.5">
+            <span className={`inline-block h-2.5 w-2.5 rounded-full ${l.dot}`} aria-hidden />
+            {l.label}
           </span>
         ))}
       </div>
 
-      {error && (
-        <div className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-2 text-xs text-status-rejected-text">
-          {error}
+      {(error || meError) && (
+        <div className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-2 text-[13px] text-status-rejected-text">
+          {error ?? meError}
         </div>
       )}
 
@@ -333,7 +342,7 @@ export function KnowledgeGraph() {
           ref={containerRef}
           className="relative min-h-[420px] overflow-hidden rounded-xl border border-border bg-surface-raised"
         >
-          {dims.width > 0 && dims.height > 0 && !isEmpty && (
+          {palette && dims.width > 0 && dims.height > 0 && !isEmpty && (
             <ForceGraph2D
               // Remount on theme change: the graph's canvas only repaints on
               // its own simulation ticks, which have long since stopped
@@ -344,16 +353,16 @@ export function KnowledgeGraph() {
               graphData={graphData}
               width={dims.width}
               height={dims.height}
-              backgroundColor={canvasBg}
+              backgroundColor={palette.bg}
               nodeId="id"
               nodeLabel={(n: unknown) => {
                 const node = n as GNode;
                 const parts = [node.label];
                 if (node.count != null) parts.push(`${node.count} doc${node.count === 1 ? "" : "s"}`);
-                if (node.weight != null) parts.push(`similarity ${node.weight.toFixed(2)}`);
+                if (node.weight != null) parts.push(node.weight >= 0.75 ? "Closely related" : "Related");
                 return parts.join(" · ");
               }}
-              linkColor={() => canvasLink}
+              linkColor={() => palette.link}
               linkWidth={1}
               onNodeClick={(n: unknown) => onNodeClick(n as GNode)}
               nodeCanvasObjectMode={() => "replace"}
@@ -363,18 +372,18 @@ export function KnowledgeGraph() {
                 const r = NODE_RADIUS[node.type];
                 ctx.beginPath();
                 ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
-                ctx.fillStyle = nodeColor[node.type];
+                ctx.fillStyle = palette.node[node.type];
                 ctx.fill();
                 if (loadingIds.has(node.id)) {
                   ctx.lineWidth = 1.5 / globalScale;
-                  ctx.strokeStyle = canvasText;
+                  ctx.strokeStyle = palette.text;
                   ctx.stroke();
                 }
-                const fontSize = Math.max(10 / globalScale, 2);
-                ctx.font = `${fontSize}px sans-serif`;
+                const fontSize = Math.max(12 / globalScale, 2);
+                ctx.font = `${fontSize}px system-ui, sans-serif`;
                 ctx.textAlign = "left";
                 ctx.textBaseline = "middle";
-                ctx.fillStyle = canvasText;
+                ctx.fillStyle = palette.text;
                 ctx.fillText(node.label, node.x + r + 2, node.y);
               }}
               nodePointerAreaPaint={(n: unknown, color: string, ctx: CanvasRenderingContext2D) => {
@@ -391,67 +400,62 @@ export function KnowledgeGraph() {
           )}
 
           {loadingIds.has(ROOT_ID) && (
-            <div className="absolute bottom-2 left-2 rounded-lg border border-border bg-surface-raised/90 px-2 py-1 text-[10px] text-text-muted">
-              Loading graph…
+            <div className="absolute bottom-2 left-2 rounded-lg border border-border bg-surface-raised/90 px-2 py-1 text-[13px] text-text-muted">
+              Loading…
             </div>
           )}
           {isEmpty && (
-            <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-xs text-text-muted">
-              {error
-                ? "Graph unavailable — see error above."
-                : "No ministries visible for this persona yet."}
+            <div className="absolute inset-0 flex items-center justify-center px-6 text-center text-sm text-text-muted">
+              {error ? "The graph isn't available right now." : "Nothing to show yet"}
             </div>
           )}
         </section>
 
         <aside className="space-y-2 overflow-auto rounded-xl border border-border bg-surface-raised p-3 text-sm">
-          <div className="text-xs uppercase tracking-wide text-text-muted">Preview</div>
+          <h2 className="text-sm font-semibold text-text">Preview</h2>
           {preview.status === "idle" && (
-            <p className="text-[11px] text-text-muted">Click a document node to preview it.</p>
+            <p className="text-[13px] text-text-muted">Click a document to read it here.</p>
           )}
           {preview.status === "loading" && (
-            <p className="text-[11px] text-text-muted">Loading preview…</p>
+            <p className="text-[13px] text-text-muted">Loading…</p>
           )}
           {preview.status === "error" && (
-            <p className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-2 text-[11px] text-status-rejected-text">
+            <p className="rounded-lg border border-status-rejected-border bg-status-rejected-surface p-2 text-[13px] text-status-rejected-text">
               {preview.message}
             </p>
           )}
           {preview.status === "ready" && preview.data.kind === "corpus_document" && (
             <div className="space-y-2">
               <div className="text-sm font-semibold text-text">{preview.data.title}</div>
-              <div className="text-[11px] text-text-muted">
+              <div className="text-[13px] text-text-muted">
                 {preview.data.ministry}
-                {preview.data.date ? ` · ${preview.data.date}` : ""}
+                {preview.data.date ? ` · ${formatDateIST(preview.data.date)}` : ""}
               </div>
               <div className="flex flex-wrap gap-1">
                 {preview.data.domains.map((d) => (
                   <span
                     key={d}
-                    className="rounded bg-surface-sunken px-1.5 py-0.5 text-[10px] text-text-muted"
+                    className="rounded bg-surface-sunken px-1.5 py-0.5 text-xs text-text-muted"
                   >
                     {d}
                   </span>
                 ))}
               </div>
-              <div className="inline-block rounded border border-border bg-surface-sunken px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-text-muted">
-                {preview.data.source_kind}
-              </div>
-              <div className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-surface-sunken p-2 text-[11px] text-text">
+              <div className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-surface-sunken p-2 text-[13px] text-text">
                 {preview.data.text}
               </div>
             </div>
           )}
           {preview.status === "ready" && preview.data.kind === "draft" && (
             <div className="space-y-2">
-              <p className="text-[11px] text-text-muted">
-                This corpus document is linked to a final-approved draft.
+              <p className="text-[13px] text-text-muted">
+                This is an approved QCI document you can open.
               </p>
               <Link
                 href={`/studio?open=${encodeURIComponent(preview.data.draft_id)}&persona=${encodeURIComponent(persona)}`}
-                className="inline-block rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-accent-hover"
+                className="inline-block rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover"
               >
-                Open in editor
+                Open document
               </Link>
             </div>
           )}

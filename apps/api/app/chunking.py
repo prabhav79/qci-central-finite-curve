@@ -15,13 +15,15 @@ from dataclasses import dataclass
 
 CHUNK_SIZE = 700
 CHUNK_OVERLAP = 120
+MIN_CHUNK_CHARS = 80
 
 # Ordered so more-specific labels win the first regex match.
 _SECTION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "payment_milestones",
         re.compile(
-            r"(payment\s+(?:milestone|schedule|terms?)|financial\s+terms?|milestone\s+payment|fee\s+schedule)",
+            r"(payment\s+(?:milestones?|schedule|terms?|structure|break\s*-?\s*ups?)|terms\s+of\s+payment"
+            r"|financial\s+terms?|milestone\s+payment|fee\s+schedule|mobili[sz]ation\s+advance)",
             re.I,
         ),
     ),
@@ -94,6 +96,15 @@ def _looks_like_heading_line(line: str) -> bool:
     return title / len(tokens) >= 0.6
 
 
+def _is_strong_heading(line: str) -> bool:
+    # ALL-CAPS only: numbered lines are too often list items inside a section.
+    s = line.strip().rstrip(":")
+    if not s or len(s) > 70:
+        return False
+    letters = [c for c in s if c.isalpha()]
+    return len(letters) >= 4 and all(c.isupper() for c in letters)
+
+
 def _match_label(line: str) -> str | None:
     for label, pat in _SECTION_PATTERNS:
         if pat.search(line):
@@ -101,31 +112,116 @@ def _match_label(line: str) -> str | None:
     return None
 
 
-def _detect_section(paragraph: str) -> tuple[str | None, str]:
+# "30% on submission of the inception report", "Mobilisation advance (50%)"
+_PAYMENT_SCHEDULE_RE = re.compile(
+    r"\d{1,3}\s*%[^.\n]{0,60}\b(on|upon|after|against)\s+(the\s+)?(submission|completion|approval|acceptance|signing)"
+    r"|mobili[sz]ation\s+advance|\binstal+ments?\b|\btranches?\b",
+    re.I,
+)
+
+
+def _detect_section(paragraph: str) -> tuple[str | None, str, bool]:
     """Detect a section for this paragraph.
 
-    Returns (label, body). The heading line (if any) is stripped off the
-    returned body so it isn't chunked twice.
+    Returns (label, body, from_heading). The heading line (if any) is stripped
+    off the returned body so it isn't chunked twice. Only headings move the
+    running section; a label inferred from body text applies to that
+    paragraph alone, otherwise one passing mention ("outputs", "deployment")
+    relabels everything that follows it.
     """
     lines = paragraph.split("\n", 1)
     first = lines[0]
     rest = lines[1] if len(lines) > 1 else ""
 
-    # Whole paragraph is heading-shape (short, no body).
+    # Whole paragraph is heading-shape (short, no body). A strong heading
+    # (numbered or ALL CAPS) that matches no section ends the previous one,
+    # so e.g. "14. Taxes" doesn't stay labelled as payment.
     if not rest.strip() and _looks_like_heading_line(first):
         label = _match_label(first)
-        return label, ""
+        return label, "", label is not None or _is_strong_heading(first)
 
     # First line is heading, rest is body — the common QCI Work Order pattern.
     if _looks_like_heading_line(first) and _match_label(first):
-        return _match_label(first), rest.strip()
+        return _match_label(first), rest.strip(), True
+    if _is_strong_heading(first) and rest.strip():
+        return None, paragraph, True
 
-    # Otherwise infer from body content itself (e.g. explicit "Payment Milestones:" mid-para).
-    return _match_label(paragraph[:200]), paragraph
+    # Inline "Payment Milestones: ..." style labels.
+    lead = paragraph[:80]
+    if ":" in lead and _match_label(lead):
+        return _match_label(lead), paragraph, False
+    if _PAYMENT_SCHEDULE_RE.search(paragraph):
+        return "payment_milestones", paragraph, False
+    return None, paragraph, False
+
+
+_LIST_MARKER_RE = re.compile(r"^\s*(\(?\d{1,2}(\.\d{1,2})*[.)]|\(?[a-z][.)]|\(?[ivx]{1,4}[.)]|[•▪●◦\-–])\s+", re.I)
 
 
 def _paragraphs(text: str) -> list[str]:
-    return [p.strip() for p in text.split("\n\n") if p.strip()]
+    """Blank-line separated blocks, with PDF page blocks (one block per page,
+    hard-wrapped lines) rebuilt into real paragraphs: a new paragraph starts
+    at a heading-shaped line or a list item; wrapped lines are re-joined."""
+    out: list[str] = []
+    for block in text.split("\n\n"):
+        lines = [ln.strip() for ln in block.split("\n") if ln.strip()]
+        if not lines:
+            continue
+        if len(lines) == 1:
+            out.append(lines[0])
+            continue
+        current: list[str] = []
+        for ln in lines:
+            starts_new = _LIST_MARKER_RE.match(ln) or (_looks_like_heading_line(ln) and len(ln) < 90)
+            if current and starts_new:
+                out.append(_join_wrapped(current))
+                current = []
+            current.append(ln)
+            if _looks_like_heading_line(ln) and len(ln) < 90 and len(current) == 1:
+                out.append(ln)
+                current = []
+        if current:
+            out.append(_join_wrapped(current))
+    return [p for p in out if p.strip()]
+
+
+def _join_wrapped(lines: list[str]) -> str:
+    text = ""
+    for ln in lines:
+        if not text:
+            text = ln
+        elif text.endswith("-") and not text.endswith(" -"):
+            text = text[:-1] + ln
+        else:
+            text = f"{text} {ln}"
+    return text
+
+
+def _word_tail(text: str, size: int) -> str:
+    """Last ~size chars of text, starting at a word boundary."""
+    tail = text[-size:]
+    cut = tail.find(" ")
+    return tail[cut + 1 :] if 0 <= cut < len(tail) - 1 else tail
+
+
+def _word_windows(text: str, size: int, overlap: int) -> list[str]:
+    """Split a long paragraph into ~size windows that start and end on word boundaries."""
+    windows: list[str] = []
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(start + size, n)
+        if end < n:
+            space = text.rfind(" ", start + size // 2, end)
+            if space != -1:
+                end = space
+        windows.append(text[start:end].strip())
+        if end >= n:
+            break
+        nxt = max(end - overlap, start + 1)
+        space = text.find(" ", nxt, end)
+        start = space + 1 if space != -1 else nxt
+    return [w for w in windows if w]
 
 
 def _pack(paragraphs: list[tuple[str, str | None]]) -> list[Chunk]:
@@ -155,7 +251,7 @@ def _pack(paragraphs: list[tuple[str, str | None]]) -> list[Chunk]:
         chunk_idx += 1
         # keep tail as overlap for next chunk
         tail = "\n\n".join(buf)
-        overlap = tail[-CHUNK_OVERLAP:] if CHUNK_OVERLAP and len(tail) > CHUNK_OVERLAP else ""
+        overlap = _word_tail(tail, CHUNK_OVERLAP) if CHUNK_OVERLAP and len(tail) > CHUNK_OVERLAP else ""
         buf = []
         buf_size = 0
         buf_section = None
@@ -175,14 +271,11 @@ def _pack(paragraphs: list[tuple[str, str | None]]) -> list[Chunk]:
             # Very long paragraph — hard-split into windows.
             if buf:
                 flush()
-            i = 0
-            while i < para_len:
-                slice_ = para[i : i + CHUNK_SIZE]
+            for slice_ in _word_windows(para, CHUNK_SIZE, CHUNK_OVERLAP):
                 chunks.append(
                     Chunk(text=slice_, section_label=section or buf_section, chunk_index=chunk_idx)
                 )
                 chunk_idx += 1
-                i += max(CHUNK_SIZE - CHUNK_OVERLAP, 1)
             continue
 
         if buf_size + para_len > CHUNK_SIZE and buf:
@@ -212,13 +305,17 @@ def chunk_text(text: str, title: str | None = None) -> list[Chunk]:
     labeled: list[tuple[str, str | None]] = []
     current: str | None = None
     for para in paragraphs:
-        label, body = _detect_section(para)
-        if label:
+        label, body, from_heading = _detect_section(para)
+        if from_heading:
             current = label
         if body:
-            labeled.append((body, current))
+            labeled.append((body, label or current))
 
-    return _pack(labeled)
+    chunks = _pack(labeled)
+    kept = [c for c in chunks if len(c.text) >= MIN_CHUNK_CHARS] or chunks[:1]
+    for i, c in enumerate(kept):
+        c.chunk_index = i
+    return kept
 
 
 def tokens(text: str) -> list[str]:

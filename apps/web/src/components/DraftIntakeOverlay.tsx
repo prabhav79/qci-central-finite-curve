@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { type AgentFrame, type PersonaKey, streamAgentChat } from "@/lib/cfcApi";
-import type { GenerationProviderChoice } from "@/components/NewDraftModal";
+import { type AgentFrame, type PersonaKey, errorText, streamAgentChat } from "@/lib/cfcApi";
+import { type LlmChoice, agentRequestFields } from "@/lib/llmChoice";
 import { Modal } from "@/components/Modal";
 import { renderInlineEmphasis } from "@/lib/inlineMarkdown";
 
@@ -11,18 +11,11 @@ type TrailItem = { label: string };
 
 const FALLBACK_MAX_TURNS = 6;
 
-function toolTrailLabel(name: string, args: Record<string, unknown>): string | null {
-  if (name === "cfc_search_corpus") {
-    const query = String(args.query ?? "").slice(0, 70);
-    return `Searching QCI's corpus for "${query}"…`;
-  }
-  if (name === "cfc_get_document") {
-    return `Reading document ${String(args.doc_id ?? "")}…`;
-  }
-  if (name === "cfc_ready_to_generate") {
-    return null; // the dedicated ready_to_generate frame handles this transition
-  }
-  return `Running ${name}…`;
+function toolTrailLabel(name: string): string | null {
+  if (name === "cfc_search_corpus") return "Looking through QCI's past documents…";
+  if (name === "cfc_get_document") return "Reading a reference document…";
+  if (name === "cfc_ready_to_generate") return null; // the ready_to_generate frame handles this
+  return "Working…";
 }
 
 /**
@@ -47,7 +40,7 @@ export function DraftIntakeOverlay({
   draftId: string;
   title: string;
   brief: string;
-  providerChoice: GenerationProviderChoice;
+  providerChoice: LlmChoice;
   persona: PersonaKey;
   onComplete: (enrichedBrief: string) => void;
   onAbandon: () => void;
@@ -65,6 +58,11 @@ export function DraftIntakeOverlay({
 
   const inFlightRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  const replyRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (!streaming && !readyMessage) replyRef.current?.focus();
+  }, [streaming, readyMessage]);
 
   // Deliberately NOT guarded by a "has this fired" ref on top of the abort
   // below: React 18 StrictMode's dev-only mount→cleanup→mount dance would
@@ -126,9 +124,7 @@ export function DraftIntakeOverlay({
         persona,
         {
           prompt: brief,
-          provider: providerChoice.provider,
-          api_key: providerChoice.provider !== "mock" ? providerChoice.apiKey.trim() : undefined,
-          model: providerChoice.model.trim() || undefined,
+          ...agentRequestFields(providerChoice),
           preset: "draft_intake",
           preset_args: { brief, title, transcript: sentTranscript, turn_count: turnCount },
         },
@@ -144,7 +140,7 @@ export function DraftIntakeOverlay({
               // the old "I'll search... Good, I can see..." clutter).
               liveText = "";
               setCurrentQuestion("");
-              const label = toolTrailLabel(frame.name, frame.args);
+              const label = toolTrailLabel(frame.name);
               if (label) {
                 setThinkingLabel(label);
                 setTrail((t) => [...t, { label }]);
@@ -152,6 +148,7 @@ export function DraftIntakeOverlay({
               break;
             }
             case "token":
+            case "text":
               liveText += frame.text;
               setCurrentQuestion(liveText);
               break;
@@ -169,7 +166,7 @@ export function DraftIntakeOverlay({
       );
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
-        frameError = e instanceof Error ? e.message : String(e);
+        frameError = errorText(e);
       } else {
         // A newer call may already be active by the time this rejection
         // arrives (the effect cleanup that triggered this abort already
@@ -183,9 +180,9 @@ export function DraftIntakeOverlay({
     setStreaming(false);
 
     if (frameError) {
-      // Deliberately do NOT touch history/turnCount here — a failed turn
-      // must be retryable with the same reply text, not silently recorded
-      // as an empty answer that advances the conversation.
+      // Don't touch history/turnCount: a failed turn must be retryable with
+      // the same reply, and the question being answered must stay on screen.
+      setCurrentQuestion(answeredQuestion);
       setErrorMsg(frameError);
       return;
     }
@@ -196,7 +193,9 @@ export function DraftIntakeOverlay({
         setHistory((h) => [...h, { question: answeredQuestion, answer: replyText }]);
       }
       setReadyMessage(
-        `Grounded in ${ready.keyDocCount} reference document${ready.keyDocCount === 1 ? "" : "s"} — starting generation…`,
+        ready.keyDocCount > 0
+          ? `Found ${ready.keyDocCount} reference document${ready.keyDocCount === 1 ? "" : "s"} — writing your draft…`
+          : "Writing your draft…",
       );
       const enrichedBrief = ready.enrichedBrief;
       setTimeout(() => onComplete(enrichedBrief), 700);
@@ -235,7 +234,7 @@ export function DraftIntakeOverlay({
   return (
     <Modal open={open} onClose={onAbandon} maxWidth="max-w-xl">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-text">A few quick questions</h2>
+        <h2 className="text-base font-semibold text-text">A few quick questions</h2>
         <button
           type="button"
           onClick={onAbandon}
@@ -249,7 +248,7 @@ export function DraftIntakeOverlay({
       {history.length > 0 && (
         <ul className="mb-3 max-h-40 space-y-2 overflow-auto">
           {history.map((h, i) => (
-            <li key={i} className="rounded-lg border border-border bg-surface-sunken p-2 text-xs">
+            <li key={i} className="rounded-lg border border-border bg-surface-sunken p-2 text-[13px]">
               <div className="flex gap-1.5 text-text-muted">
                 <span className="shrink-0 font-medium text-accent">Q{i + 1}</span>
                 <span>{renderInlineEmphasis(h.question)}</span>
@@ -272,21 +271,19 @@ export function DraftIntakeOverlay({
           <span className="h-2 w-2 animate-pulse rounded-full bg-agent" aria-hidden />
           {thinkingLabel}
         </div>
-      ) : (
+      ) : currentQuestion ? (
         <div key={turnCount} className="animate-rise-in rounded-lg border border-agent/30 bg-agent/10 p-3">
-          <span className="text-[10px] font-medium uppercase tracking-wide text-agent">
+          <span className="text-xs font-medium text-agent">
             Question {turnCount}
             {maxTurns ? ` of up to ${maxTurns}` : ""}
           </span>
           <p className="mt-1 text-sm text-text">{renderInlineEmphasis(currentQuestion)}</p>
         </div>
-      )}
+      ) : null}
 
       {trail.length > 1 && (
-        <details className="mt-2 text-[10px] text-text-muted">
-          <summary className="cursor-pointer select-none hover:text-text">
-            {trail.length} research step{trail.length === 1 ? "" : "s"}
-          </summary>
+        <details className="mt-2 text-xs text-text-muted">
+          <summary className="cursor-pointer select-none hover:text-text">Details</summary>
           <ul className="mt-1 space-y-0.5 pl-3">
             {trail.map((t, i) => (
               <li key={i}>{t.label}</li>
@@ -296,7 +293,7 @@ export function DraftIntakeOverlay({
       )}
 
       {errorMsg && (
-        <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-status-rejected-border bg-status-rejected-surface p-2 text-xs text-status-rejected-text">
+        <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-status-rejected-border bg-status-rejected-surface p-2 text-[13px] text-status-rejected-text">
           <span>{errorMsg}</span>
           <button
             type="button"
@@ -311,6 +308,7 @@ export function DraftIntakeOverlay({
       {!readyMessage && (
         <>
           <textarea
+            ref={replyRef}
             value={reply}
             onChange={(e) => setReply(e.target.value)}
             onKeyDown={(e) => {
@@ -321,7 +319,8 @@ export function DraftIntakeOverlay({
             }}
             disabled={streaming}
             rows={2}
-            placeholder={isThinking ? "Searching for context…" : "Type your answer…"}
+            placeholder={isThinking ? "Looking through QCI's past documents…" : "Type your answer…"}
+            aria-label="Your answer"
             className="mt-3 w-full rounded-lg border border-border-strong bg-surface-sunken p-2 text-sm text-text outline-none focus:border-accent disabled:opacity-50"
           />
 
@@ -330,16 +329,16 @@ export function DraftIntakeOverlay({
               type="button"
               onClick={submitReply}
               disabled={streaming || !reply.trim()}
-              className="rounded-lg bg-agent px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-agent-hover disabled:opacity-50"
+              className="rounded-lg bg-agent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-agent-hover disabled:opacity-50"
             >
-              {streaming ? "…" : "Next"}
+              {streaming ? "Working…" : "Next"}
             </button>
             <button
               type="button"
               onClick={skip}
-              className="rounded-lg border border-border-strong px-3 py-1.5 text-xs text-text transition-colors hover:bg-surface-sunken"
+              className="rounded-lg border border-border-strong px-3 py-1.5 text-[13px] text-text transition-colors hover:bg-surface-sunken"
             >
-              Skip remaining questions, generate now
+              Skip the questions and write the draft now
             </button>
           </div>
         </>

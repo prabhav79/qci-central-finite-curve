@@ -20,7 +20,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "QCI Central Finite Curve",
-  description: "Institutional knowledge engine + SuperDoc document governance",
+  description: "Draft, review and approve QCI documents in one place, with AI help drawn from QCI's past work.",
 };
 
 export default function RootLayout({

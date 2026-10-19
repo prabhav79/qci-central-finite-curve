@@ -1,13 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { errorText } from "@/lib/cfcApi";
 import { Modal } from "@/components/Modal";
 
 export type DecisionKind = "reject" | "changes_requested";
 
 export function DecisionModal({
   open,
-  level,
   kind,
   defaultAnchorText,
   busy,
@@ -15,7 +15,6 @@ export function DecisionModal({
   onConfirm,
 }: {
   open: boolean;
-  level: 1 | 2;
   kind: DecisionKind;
   defaultAnchorText?: string;
   busy?: boolean;
@@ -36,7 +35,7 @@ export function DecisionModal({
 
   if (!open) return null;
 
-  const title = kind === "reject" ? `Reject at L${level}` : `Request changes at L${level}`;
+  const title = kind === "reject" ? "Reject this document" : "Send back for changes";
   const verb = kind === "reject" ? "Reject" : "Send back";
   const tone =
     kind === "reject"
@@ -46,32 +45,36 @@ export function DecisionModal({
   async function submit() {
     const trimmed = comment.trim();
     if (!trimmed) {
-      setError("A written reason is required.");
+      setError("Please write a short note explaining why.");
       return;
     }
     setError(null);
     try {
       await onConfirm(trimmed);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   }
 
   return (
     <Modal open={open} onClose={onCancel}>
       <div className="mb-1 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-text">{title}</h2>
-        <button type="button" onClick={onCancel} className="text-xs text-text-muted hover:text-text">
-          Esc
+        <h2 className="text-base font-semibold text-text">{title}</h2>
+        <button
+          type="button"
+          onClick={onCancel}
+          aria-label="Close"
+          className="rounded-md px-1.5 py-0.5 text-lg leading-none text-text-muted transition-colors hover:bg-surface-sunken hover:text-text"
+        >
+          ×
         </button>
       </div>
-      <p className="mb-3 text-xs text-text-muted">
-        This reason is stored as a review thread on the draft. The maker will see it in Threads and
-        the audit log. Approvals cannot be undone; be specific.
+      <p className="mb-3 text-[13px] text-text-muted">
+        Your note will be shared with the author and kept on record.
       </p>
       {defaultAnchorText && (
-        <p className="mb-2 truncate rounded-lg border border-border bg-surface-sunken px-2 py-1 text-[11px] text-text-muted">
-          Anchor context: {defaultAnchorText}
+        <p className="mb-2 truncate rounded-lg border border-border bg-surface-sunken px-2 py-1 text-xs text-text-muted">
+          About this text: {defaultAnchorText}
         </p>
       )}
       <textarea
@@ -79,20 +82,21 @@ export function DecisionModal({
         value={comment}
         onChange={(e) => setComment(e.target.value)}
         rows={6}
+        aria-label="Your note"
         placeholder={
           kind === "reject"
-            ? "Why is this draft being rejected? What must change before another submission?"
-            : "What changes do you want the maker to make before resubmitting?"
+            ? "Why is this document being rejected? What would need to change?"
+            : "What should the author change before sending it back?"
         }
         className="w-full rounded-lg border border-border-strong bg-surface-sunken p-2 text-sm text-text outline-none focus:border-accent"
       />
-      {error && <p className="mt-2 text-xs text-status-rejected-text">{error}</p>}
+      {error && <p className="mt-2 text-[13px] text-status-rejected-text">{error}</p>}
       <div className="mt-3 flex justify-end gap-2">
         <button
           type="button"
           onClick={onCancel}
           disabled={busy}
-          className="rounded-lg border border-border-strong px-3 py-1.5 text-xs text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
+          className="rounded-lg border border-border-strong px-3 py-1.5 text-[13px] text-text transition-colors hover:bg-surface-sunken disabled:opacity-50"
         >
           Cancel
         </button>
@@ -100,7 +104,7 @@ export function DecisionModal({
           type="button"
           onClick={() => void submit()}
           disabled={busy}
-          className={`rounded-lg px-3 py-1.5 text-xs font-medium text-white transition-colors ${tone} disabled:opacity-50`}
+          className={`rounded-lg px-3 py-1.5 text-[13px] font-medium text-white transition-colors ${tone} disabled:opacity-50`}
         >
           {busy ? "Sending…" : verb}
         </button>
