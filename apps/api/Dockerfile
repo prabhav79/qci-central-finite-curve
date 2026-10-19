@@ -14,6 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY apps/api/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+# Bake the embedding model into the image so a fresh container doesn't stall
+# its first search downloading it.
+ENV FASTEMBED_CACHE_PATH=/opt/fastembed
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"
+
 # Copy the whole monorepo the API touches: app code, alembic, seed, WOs, fixtures.
 # Railway's build context is the repo root (see railway.toml).
 COPY apps/api /app/apps/api

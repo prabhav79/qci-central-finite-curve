@@ -34,6 +34,7 @@ from .corpus_db import db_get_document, db_has_corpus, db_search
 from .db import ROOT
 import uuid as _uuid
 
+from .locks import draft_write_lock
 from .models import AuditLog, CorpusDocument, Draft, DraftVersion, Thread, User
 from .storage import default_bucket
 
@@ -69,13 +70,26 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "query": {"type": "string", "description": "Natural-language search query."},
                 "limit": {"type": "integer", "description": "Max hits (1-10).", "default": 5},
                 "ministry": {"type": "string", "description": "Optional ministry filter."},
+                "section": {
+                    "type": "string",
+                    "description": "Optional: the document section you are looking for, to prefer passages from that section.",
+                    "enum": [
+                        "background",
+                        "scope_of_work",
+                        "deliverables",
+                        "duration",
+                        "payment_milestones",
+                        "composition_manpower",
+                        "general_terms",
+                    ],
+                },
             },
             "required": ["query"],
         },
     },
     {
         "name": "cfc_get_document",
-        "description": "Fetch the full text of one corpus document by its doc_id.",
+        "description": "Fetch the text of one corpus document by its doc_id (long documents are truncated).",
         "parameters": {
             "type": "object",
             "properties": {"doc_id": {"type": "string"}},
@@ -106,7 +120,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "anchor": {"type": "string", "description": "Required when position='after_match'."},
                 "citation": {
                     "type": "string",
-                    "description": "Optional citation label appended after the inserted text.",
+                    "description": "Optional doc_id of the main source document; its title is cited after the text.",
                 },
             },
             "required": ["text"],
@@ -248,6 +262,10 @@ class ToolError(Exception):
     """Recoverable tool failure — surfaced to the LLM so it can adjust."""
 
 
+class WorkerUnavailable(ToolError):
+    """doc-worker returned an HTTP error or couldn't be reached."""
+
+
 _MD_EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*")
 _MD_HEADING_RE = re.compile(r"^(#{1,3})\s+(.*)$")
 _MD_BULLET_RE = re.compile(r"^[-*]\s+(.*)$")
@@ -331,12 +349,9 @@ def _post_worker(path: str, payload: dict[str, Any]) -> dict[str, Any]:
             return json.loads(resp.read().decode("utf-8"))
     except HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-        raise ToolError(f"doc-worker HTTP {e.code}: {detail[:400]}") from e
-    except URLError as e:
-        raise ToolError(
-            f"doc-worker unreachable at {DOC_WORKER_URL}: {e.reason}. "
-            "Start with `npm run dev:doc-worker`."
-        ) from e
+        raise WorkerUnavailable(f"doc-worker HTTP {e.code}: {detail[:400]}") from e
+    except (URLError, TimeoutError, OSError) as e:
+        raise WorkerUnavailable(f"doc-worker unreachable at {DOC_WORKER_URL}: {e}") from e
 
 
 def _new_version_path(ctx: AgentContext, next_version: int) -> tuple[str, Path]:
@@ -352,7 +367,16 @@ def _dispatch_mutate(
     """Call doc-worker /internal/docx/mutate, save output as new draft_version."""
     if not ctx.session_flags.get("can_run_agent_mutate"):
         raise ToolError("this persona cannot mutate the draft in the current state")
+    with draft_write_lock(ctx.draft.id):
+        ctx.session.refresh(ctx.draft)
+        return _dispatch_mutate_locked(ctx, ops, trigger)
 
+
+def _dispatch_mutate_locked(
+    ctx: AgentContext,
+    ops: list[dict[str, Any]],
+    trigger: str,
+) -> dict[str, Any]:
     current_path = _current_version_path(ctx)
     next_v = ctx.draft.current_version + 1
     new_key, new_abs = _new_version_path(ctx, next_v)
@@ -374,7 +398,15 @@ def _dispatch_mutate(
         "actorName": ctx.user.full_name,
         "actorEmail": ctx.user.email,
     }
-    worker = _post_worker("/internal/docx/mutate", payload)
+    only_appends = all(op.get("kind") == "insert_end" for op in ops)
+    try:
+        worker = _post_worker("/internal/docx/mutate", payload)
+    except WorkerUnavailable as e:
+        if not only_appends:
+            raise
+        # Appends don't need the SuperDoc SDK — keep generating if doc-worker is down.
+        log.warning("doc-worker unavailable, appending via python-docx: %s", e)
+        worker = {"ok": True, "applied": [{"op": op, "ok": False} for op in ops]}
     if not worker.get("ok"):
         raise ToolError(f"doc-worker failed: {worker.get('error') or worker}")
 
@@ -438,24 +470,49 @@ def _dispatch_mutate(
 
 # ------- callable tools -------
 
-def cfc_search_corpus(ctx: AgentContext, query: str, limit: int = 5, ministry: str | None = None) -> dict[str, Any]:
+_AGENT_HIT_FIELDS = ("doc_id", "title", "ministry", "date", "section_label", "text", "relevance")
+_GET_DOCUMENT_CHAR_CAP = 12000
+
+
+def cfc_search_corpus(
+    ctx: AgentContext,
+    query: str,
+    limit: int = 5,
+    ministry: str | None = None,
+    section: str | None = None,
+) -> dict[str, Any]:
     if not db_has_corpus(ctx.session):
-        return {"hits": [], "note": "corpus empty; run `python -m app.ingest` first"}
+        return {"hits": [], "note": "corpus empty"}
     hits = db_search(
         ctx.session,
         query,
         user=ctx.user,
         limit=max(1, min(int(limit or 5), 10)),
         ministry=ministry,
+        section=section,
+        for_agent=True,
     )
-    return {"count": len(hits), "hits": hits}
+    trimmed = [{k: h[k] for k in _AGENT_HIT_FIELDS if h.get(k) not in (None, "")} for h in hits]
+    return {"count": len(trimmed), "hits": trimmed}
 
 
 def cfc_get_document(ctx: AgentContext, doc_id: str) -> dict[str, Any]:
     doc = db_get_document(ctx.session, doc_id, user=ctx.user)
     if not doc:
         raise ToolError(f"document not found (or not visible to your division): {doc_id}")
-    return doc
+    full_text = doc.get("full_text") or ""
+    out = {k: doc.get(k) for k in ("doc_id", "title", "ministry", "date", "value_inr")}
+    out["deliverables"] = (doc.get("deliverables") or "")[:2000]
+    out["full_text"] = full_text[:_GET_DOCUMENT_CHAR_CAP]
+    if len(full_text) > _GET_DOCUMENT_CHAR_CAP:
+        out["truncated"] = True
+    return out
+
+
+def _citation_label(ctx: AgentContext, citation: str) -> str:
+    """Cite the document's human-readable title, never a raw doc_id/filename."""
+    doc = db_get_document(ctx.session, citation.strip(), user=ctx.user)
+    return (doc or {}).get("title") or citation.strip()
 
 
 def cfc_read_current_draft(ctx: AgentContext) -> dict[str, Any]:
@@ -473,7 +530,7 @@ def cfc_propose_insert(
 ) -> dict[str, Any]:
     if not text or not text.strip():
         raise ToolError("insert text is empty")
-    payload_text = text if not citation else f"{text}\n\n[Source: {citation}]"
+    payload_text = text if not citation else f"{text}\n\n*(Source: {_citation_label(ctx, citation)})*"
     if position == "after_match":
         if not anchor or not anchor.strip():
             raise ToolError("position=after_match requires an 'anchor' string")

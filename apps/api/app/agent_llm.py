@@ -1,13 +1,14 @@
 """
-BYOK LLM adapter with tool-calling.
+LLM adapter with tool-calling.
 
 Providers:
-- gemini   — Google Generative Language API v1beta streamGenerateContent
-- openai   — OpenAI chat.completions with tools + stream
-- mock     — scripted response for smoke tests (no key required)
+- anthropic — Claude Messages API (default; server-side ANTHROPIC_API_KEY)
+- gemini    — Google Generative Language API v1beta streamGenerateContent
+- openai / groq — OpenAI-compatible chat.completions with tools + stream
+- mock      — scripted response for smoke tests (no key required)
 
-BYOK per request: the key comes from the frontend on each /agent/chat call.
-There is no server-side key.
+Keys come from the server env chain (main._resolve_agent_configs) or, for
+admins testing other providers, from the browser on each /agent/chat call.
 
 Emits a stream of dict frames:
   {type: "token", text: "..."}
@@ -21,7 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterator
 
@@ -44,6 +47,56 @@ class Turn:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)  # [{id, name, args}]
     tool_call_id: str | None = None  # when role=tool
     name: str | None = None  # tool name for role=tool
+    # Anthropic assistant content blocks exactly as returned (thinking blocks
+    # carry signatures bound to this conversation and must be replayed verbatim).
+    raw_content: list[dict[str, Any]] | None = None
+
+
+class AgentError(Exception):
+    def __init__(self, message: str, code: str = "unknown") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+_FRIENDLY = {
+    "auth": "The AI service rejected its access key. Please contact the administrator.",
+    "quota": "The AI service has run out of credit. Please contact the administrator.",
+    "rate_limit": "The AI service is busy right now. Please try again in a minute.",
+    "provider": "The AI service is temporarily unavailable. Please try again.",
+    "timeout": "The AI service took too long to respond. Please try again.",
+    "refusal": "The AI declined to write this part. Try rephrasing the request.",
+    "config": "No AI service is configured. Please contact the administrator.",
+    "unknown": "Something went wrong while drafting. Please try again.",
+}
+
+
+def classify_error(e: BaseException) -> tuple[str, str]:
+    """Map a provider/transport exception to (code, plain-English message)."""
+    if isinstance(e, AgentError):
+        return e.code, str(e)
+    status: int | None = getattr(e, "status_code", None)
+    text = str(e)
+    if status is None:
+        m = re.search(r"HTTP (\d{3})", text)
+        status = int(m.group(1)) if m else None
+    lowered = text.lower()
+    if status in (401, 403):
+        code = "auth"
+    elif status == 402 or "credit" in lowered or "billing" in lowered or "quota" in lowered:
+        code = "quota"
+    elif status == 429:
+        code = "rate_limit"
+    elif "timeout" in type(e).__name__.lower() or "timed out" in lowered:
+        code = "timeout"
+    elif status is not None and status >= 500 or "overloaded" in lowered or "connection" in type(e).__name__.lower():
+        code = "provider"
+    else:
+        code = "unknown"
+    return code, _FRIENDLY[code]
+
+
+def error_frame(code: str, message: str | None = None) -> dict[str, Any]:
+    return {"type": "error", "code": code, "message": message or _FRIENDLY.get(code, _FRIENDLY["unknown"])}
 
 
 @dataclass
@@ -70,13 +123,9 @@ DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini-flash-latest",
     "google": "gemini-flash-latest",
-    "groq": "llama-3.3-70b-versatile",
-    # Haiku, not Opus/Sonnet: this provider is meant for BYOK demo keys on a
-    # small prepaid budget (draft_generator's per-section calls are short —
-    # one retrieval + one ~300-word section — so the cheapest current model
-    # comfortably covers many runs without a quality cliff for this task).
-    "anthropic": "claude-haiku-4-5",
-    "claude": "claude-haiku-4-5",
+    "groq": "openai/gpt-oss-120b",
+    "anthropic": "claude-sonnet-5-5",
+    "claude": "claude-sonnet-5-5",
     "mock": "",
 }
 
@@ -256,11 +305,9 @@ def _stream_gemini(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]
     yield {"kind": "final", "tool_calls": tool_calls, "finish_reason": kind}
 
 
-# Short, bounded generations (one retrieval + one section insert per call) —
-# capped well below the SDK's non-streaming timeout threshold on purpose, not
-# a lowballed default; this keeps a small BYOK budget from disappearing into
-# one runaway response.
-_ANTHROPIC_MAX_TOKENS = 1536
+# Adaptive thinking counts against max_tokens, so leave room for it plus a
+# full section inside the insert tool's arguments.
+_ANTHROPIC_MAX_TOKENS = 16000
 
 
 def _anthropic_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -274,10 +321,21 @@ def _anthropic_tools(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _stream_anthropic(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+_ANTHROPIC_CLIENTS: dict[str, Any] = {}
+_ADAPTIVE_THINKING_MODEL_RE = re.compile(r"^claude-(sonnet|opus|haiku|fable|mythos)-5")
+
+
+def _anthropic_client(api_key: str) -> Any:
     import anthropic as _anthropic_sdk
 
-    system_parts = [t.content for t in turns if t.role == "system" and t.content]
+    client = _ANTHROPIC_CLIENTS.get(api_key)
+    if client is None:
+        client = _anthropic_sdk.Anthropic(api_key=api_key, max_retries=3)
+        _ANTHROPIC_CLIENTS[api_key] = client
+    return client
+
+
+def _anthropic_messages(turns: list[Turn]) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     for t in turns:
         if t.role == "system":
@@ -285,45 +343,76 @@ def _stream_anthropic(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, A
         if t.role == "user":
             messages.append({"role": "user", "content": t.content})
         elif t.role == "assistant":
-            content: list[dict[str, Any]] = []
-            if t.content:
-                content.append({"type": "text", "text": t.content})
-            for tc in t.tool_calls:
-                content.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc.get("args") or {}})
+            if t.raw_content is not None:
+                content = t.raw_content
+            else:
+                content = []
+                if t.content:
+                    content.append({"type": "text", "text": t.content})
+                for tc in t.tool_calls:
+                    content.append({"type": "tool_use", "id": tc["id"], "name": tc["name"], "input": tc.get("args") or {}})
             messages.append({"role": "assistant", "content": content})
         elif t.role == "tool":
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "tool_result", "tool_use_id": t.tool_call_id, "content": t.content or ""}
-                    ],
-                }
-            )
+            block = {"type": "tool_result", "tool_use_id": t.tool_call_id, "content": t.content or ""}
+            prev = messages[-1] if messages else None
+            # All results for one assistant turn's tool calls go back in a single user message.
+            if prev and prev["role"] == "user" and isinstance(prev["content"], list) and prev["content"] and prev["content"][0].get("type") == "tool_result":
+                prev["content"].append(block)
+            else:
+                messages.append({"role": "user", "content": [block]})
+    return messages
 
-    client = _anthropic_sdk.Anthropic(api_key=cfg.api_key)
+
+def _stream_anthropic(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+    model = cfg.model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODELS["anthropic"]
+    system_parts = [t.content for t in turns if t.role == "system" and t.content]
     kwargs: dict[str, Any] = {
-        "model": cfg.model or DEFAULT_MODELS.get(cfg.provider, "claude-haiku-4-5"),
+        "model": model,
         "max_tokens": _ANTHROPIC_MAX_TOKENS,
-        "messages": messages,
+        "messages": _anthropic_messages(turns),
     }
     if system_parts:
         kwargs["system"] = "\n\n".join(system_parts)
     if tools:
         kwargs["tools"] = _anthropic_tools(tools)
+    if _ADAPTIVE_THINKING_MODEL_RE.match(model):
+        thinking = (os.environ.get("ANTHROPIC_THINKING") or "adaptive").strip()
+        kwargs["thinking"] = {"type": thinking}
+        effort = (os.environ.get("ANTHROPIC_EFFORT") or "low").strip()
+        if effort:
+            kwargs["output_config"] = {"effort": effort}
+    if os.environ.get("ANTHROPIC_SERVER_FALLBACK") == "1":
+        kwargs["extra_headers"] = {"anthropic-beta": "server-side-fallback-2026-07-01"}
+        kwargs["extra_body"] = {"fallbacks": "default"}
 
+    client = _anthropic_client(cfg.api_key or "")
+    started = time.monotonic()
     with client.messages.stream(**kwargs) as stream:
         for text in stream.text_stream:
             yield {"kind": "text", "text": text}
         final = stream.get_final_message()
+
+    usage = getattr(final, "usage", None)
+    log.info(
+        "anthropic call model=%s stop=%s in=%s out=%s cache_read=%s secs=%.1f",
+        getattr(final, "model", model),
+        final.stop_reason,
+        getattr(usage, "input_tokens", None),
+        getattr(usage, "output_tokens", None),
+        getattr(usage, "cache_read_input_tokens", None),
+        time.monotonic() - started,
+    )
+    if final.stop_reason == "refusal":
+        raise AgentError(_FRIENDLY["refusal"], "refusal")
 
     tool_calls = [
         {"id": b.id, "name": b.name, "args": b.input}
         for b in final.content
         if b.type == "tool_use"
     ]
+    raw_content = [b.model_dump(mode="json", exclude_none=True) for b in final.content]
     finish_reason = "tool_calls" if tool_calls else (final.stop_reason or "stop")
-    yield {"kind": "final", "tool_calls": tool_calls, "finish_reason": finish_reason}
+    yield {"kind": "final", "tool_calls": tool_calls, "finish_reason": finish_reason, "raw_content": raw_content}
 
 
 def _stream_mock(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
@@ -467,15 +556,21 @@ def run_agent(
     user_prompt: str,
     tool_schemas: list[dict[str, Any]],
     tool_dispatch: Callable[[str, dict[str, Any]], dict[str, Any]],
+    end_after_tools: frozenset[str] = frozenset(),
 ) -> Iterator[dict[str, Any]]:
-    """Yield SSE-shaped frames driving one agent conversation to completion."""
+    """Yield SSE-shaped frames driving one agent conversation to completion.
+
+    `end_after_tools`: a successful call to any of these ends the conversation
+    without another LLM round trip (the generator uses it so a section stops
+    once its text is written)."""
     provider = (cfg.provider or "").lower().strip() or "mock"
     stream_fn = _PROVIDER_STREAMS.get(provider)
     if not stream_fn:
-        yield {"type": "error", "message": f"unknown provider: {provider}"}
+        log.error("unknown provider: %s", provider)
+        yield error_frame("config")
         return
     if provider != "mock" and not cfg.api_key:
-        yield {"type": "error", "message": f"BYOK: api_key is required for provider={provider}"}
+        yield error_frame("config")
         return
 
     turns: list[Turn] = [
@@ -486,6 +581,7 @@ def run_agent(
     for step in range(MAX_STEPS):
         text_buf: list[str] = []
         tool_calls: list[dict[str, Any]] = []
+        raw_content: list[dict[str, Any]] | None = None
         finish_reason = "stop"
         try:
             for frame in stream_fn(cfg, turns, tool_schemas):
@@ -495,12 +591,16 @@ def run_agent(
                 elif frame["kind"] == "final":
                     tool_calls = frame.get("tool_calls") or []
                     finish_reason = frame.get("finish_reason") or "stop"
+                    raw_content = frame.get("raw_content")
         except Exception as e:  # noqa: BLE001
-            log.exception("provider stream failed")
-            yield {"type": "error", "message": f"{type(e).__name__}: {e}"}
+            log.exception("provider stream failed (provider=%s)", provider)
+            code, message = classify_error(e)
+            yield error_frame(code, message)
             return
 
-        assistant_turn = Turn(role="assistant", content="".join(text_buf), tool_calls=tool_calls)
+        assistant_turn = Turn(
+            role="assistant", content="".join(text_buf), tool_calls=tool_calls, raw_content=raw_content
+        )
         turns.append(assistant_turn)
 
         if not tool_calls:
@@ -526,6 +626,9 @@ def run_agent(
                     "rationale": result.get("rationale"),
                 }
                 return
+            if tc["name"] in end_after_tools and isinstance(result, dict) and not result.get("error"):
+                yield {"type": "done", "reason": "section_written"}
+                return
             turns.append(
                 Turn(
                     role="tool",
@@ -544,21 +647,23 @@ def run_agent_with_fallback(
     user_prompt: str,
     tool_schemas: list[dict[str, Any]],
     tool_dispatch: Callable[[str, dict[str, Any]], dict[str, Any]],
+    end_after_tools: frozenset[str] = frozenset(),
 ) -> Iterator[dict[str, Any]]:
     """Try each config in order. If a config errors BEFORE producing any successful
     step (tool_call or token), retry the next one and emit a `provider_fallback`
     frame so the client knows. Once we're past the first step, errors propagate.
     """
     if not configs:
-        yield {"type": "error", "message": "no LLM configs available"}
+        yield error_frame("config")
         return
 
     last_error: str | None = None
+    last_code = "unknown"
     for idx, cfg in enumerate(configs):
         buffered: list[dict[str, Any]] = []
         produced_something = False
         errored_early = False
-        for frame in run_agent(cfg, system_prompt, user_prompt, tool_schemas, tool_dispatch):
+        for frame in run_agent(cfg, system_prompt, user_prompt, tool_schemas, tool_dispatch, end_after_tools):
             if produced_something:
                 yield frame
                 continue
@@ -577,6 +682,7 @@ def run_agent_with_fallback(
                 continue
             if frame["type"] == "error":
                 last_error = frame.get("message")
+                last_code = frame.get("code") or "unknown"
                 errored_early = True
                 break
             buffered.append(frame)  # start/preset held until we know this config works
@@ -589,4 +695,4 @@ def run_agent_with_fallback(
             yield {"type": "done", "reason": "empty_stream"}
             return
         # else: try the next config
-    yield {"type": "error", "message": f"all providers failed: {last_error or 'unknown'}"}
+    yield error_frame(last_code, last_error)

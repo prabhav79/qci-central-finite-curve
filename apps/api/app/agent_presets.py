@@ -207,9 +207,11 @@ Operating rules:
    were deliberately chosen (via a clarifying conversation with the user) as
    the best precedent for this whole document, not just guessed at. You may
    ALSO call cfc_search_corpus with a query focused on THIS section and the
-   brief (e.g. "deliverables digital governance ministry"), limit=3, to fill
-   gaps the primary documents don't cover — but never let a supplementary
-   search result override or contradict facts drawn from the primary set.
+   brief (e.g. "deliverables third-party evaluation fisheries schemes"),
+   limit=3{search_section_arg}, to fill gaps the primary documents
+   don't cover — but never let a supplementary search result override or
+   contradict facts drawn from the primary set. Issue the document fetches
+   and the search together in one turn when you need both.
 2. Write ONLY the "{section_title}" section — do not draft the whole
    document, do not repeat other sections, do not add a table of contents.
 3. ADAPT, DON'T COPY: every retrieved document — primary or supplementary —
@@ -223,7 +225,7 @@ Operating rules:
    - text: start with a "## {section_title}" heading line, then
      well-formatted plain-text content for this section only (roughly
      150-350 words)
-   - citation: the source doc_id you drew from, if any
+   - citation: the doc_id of the main source you drew from, if any
 5. NEVER invent facts, numbers, or dates. State one only if it appeared in a
    cfc_search_corpus/cfc_get_document result returned earlier in this
    conversation — if you're not sure whether something is a real retrieved
@@ -234,8 +236,8 @@ Operating rules:
 6. All results respect the caller's division silo — you cannot see other
    boards' documents.
 
-Be terse. When done, state in one sentence which precedent (if any) you
-drew from.
+The section is finished as soon as cfc_propose_insert succeeds; do not add
+any commentary before or after the tool calls.
 """
 
 DRAFT_GENERATOR_USER_TEMPLATE = """Overall brief: {task}
@@ -252,8 +254,42 @@ facts, client names, or figures that contradict them):
 """
 
 
-def draft_generator_system(section_title: str) -> str:
-    return DRAFT_GENERATOR_SYSTEM_TEMPLATE.format(section_title=section_title)
+# Outline sections are richer than the 7 labels the corpus chunker assigns;
+# map each to the corpus section whose passages make the best precedent.
+CORPUS_SECTION_FOR: dict[str, str] = {
+    "background": "background",
+    "background_problem": "background",
+    "executive_summary": "background",
+    "tor_understanding": "background",
+    "scope_of_work": "scope_of_work",
+    "objectives": "scope_of_work",
+    "approach_methodology": "scope_of_work",
+    "methodology": "scope_of_work",
+    "implementation_plan": "scope_of_work",
+    "work_plan": "scope_of_work",
+    "stakeholder_analysis": "scope_of_work",
+    "target_beneficiaries": "scope_of_work",
+    "sustainability": "scope_of_work",
+    "monitoring_evaluation": "scope_of_work",
+    "deliverables": "deliverables",
+    "expected_outcomes": "deliverables",
+    "duration": "duration",
+    "timeline": "duration",
+    "payment_milestones": "payment_milestones",
+    "budget": "payment_milestones",
+    "cost_financials": "payment_milestones",
+    "composition_manpower": "composition_manpower",
+    "team_composition": "composition_manpower",
+    "general_terms": "general_terms",
+}
+
+
+def draft_generator_system(section_title: str, section_label: str = "") -> str:
+    corpus_section = CORPUS_SECTION_FOR.get(section_label)
+    return DRAFT_GENERATOR_SYSTEM_TEMPLATE.format(
+        section_title=section_title,
+        search_section_arg=f', section="{corpus_section}"' if corpus_section else "",
+    )
 
 
 def draft_generator_user(

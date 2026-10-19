@@ -61,7 +61,8 @@
       "cfc_role": "l2_approver",
       "division_or_board": "QCI",
       "manager_employee_id": "613",
-      "is_admin": false
+      "is_admin": false,
+      "cross_division_read": true
     },
     {
       "employee_id": "1100",
@@ -71,7 +72,8 @@
       "cfc_role": "l2_approver",
       "division_or_board": "QCI",
       "manager_employee_id": "613",
-      "is_admin": false
+      "is_admin": false,
+      "cross_division_read": true
     }
   ]
 }

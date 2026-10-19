@@ -13,6 +13,7 @@ only chunks whose division_code == user.division_code.
 """
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -20,19 +21,22 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from .access import reads_all_boards
 from .chunking import tokens
 from .db import IS_POSTGRES
 from .embeddings import cosine, embed_one, from_storage
 from .models import CorpusChunk, CorpusDocument, CorpusEdge, User
 
-# Section keywords that pull a query toward a labeled section.
+# Section keywords that pull a query toward a labeled section. Whole words
+# only — substring matching made "feedback" a payment query ("fee") and
+# "recommend" a duration query ("end").
 _SECTION_TRIGGERS: list[tuple[str, re.Pattern[str]]] = [
-    ("payment_milestones", re.compile(r"payment|milestone|financial|fee|cost|invoice|budget", re.I)),
-    ("deliverables", re.compile(r"deliverable|output|outcome", re.I)),
-    ("duration", re.compile(r"duration|period|tenure|timeline|start|end|extension", re.I)),
-    ("composition_manpower", re.compile(r"manpower|composition|team|resource\s+person|staff", re.I)),
-    ("scope_of_work", re.compile(r"scope|terms?\s+of\s+reference|objective|task", re.I)),
-    ("general_terms", re.compile(r"terms|conditions?|indemnity|confidentialit|terminat", re.I)),
+    ("payment_milestones", re.compile(r"\b(payments?|milestones?|financials?|fees?|costs?|invoices?|budgets?|instal+ments?|tranches?)\b", re.I)),
+    ("deliverables", re.compile(r"\b(deliverables?|outputs?|outcomes?|reports? to be submitted)\b", re.I)),
+    ("duration", re.compile(r"\b(duration|period|tenure|timelines?|schedule)\b", re.I)),
+    ("composition_manpower", re.compile(r"\b(manpower|team composition|resource persons?|staffing|team members?)\b", re.I)),
+    ("scope_of_work", re.compile(r"\b(scope of work|terms of reference|objectives?)\b", re.I)),
+    ("general_terms", re.compile(r"\b(general terms|terms and conditions|indemnity|confidentiality|termination)\b", re.I)),
 ]
 
 
@@ -44,9 +48,7 @@ def _section_hint(query: str) -> str | None:
 
 
 def _apply_acl(stmt, user: User | None):
-    if user is None:
-        return stmt
-    if user.cfc_role == "apex" or user.is_admin:
+    if user is None or reads_all_boards(user):
         return stmt
     return stmt.where(CorpusChunk.division_code == user.division_code)
 
@@ -78,7 +80,7 @@ def db_stats(s: Session) -> dict[str, Any]:
 
 def db_list_documents(s: Session, limit: int = 300, user: User | None = None) -> list[dict[str, Any]]:
     stmt = select(CorpusDocument).order_by(CorpusDocument.updated_at.desc()).limit(limit)
-    if user is not None and user.cfc_role != "apex" and not user.is_admin:
+    if user is not None and not reads_all_boards(user):
         stmt = stmt.where(CorpusDocument.division_code == user.division_code)
     docs = s.execute(stmt).scalars().all()
     return [
@@ -99,7 +101,7 @@ def db_list_documents(s: Session, limit: int = 300, user: User | None = None) ->
 
 def db_get_document(s: Session, doc_id: str, user: User | None = None) -> dict[str, Any] | None:
     stmt = select(CorpusDocument).where(CorpusDocument.doc_id == doc_id)
-    if user is not None and user.cfc_role != "apex" and not user.is_admin:
+    if user is not None and not reads_all_boards(user):
         stmt = stmt.where(CorpusDocument.division_code == user.division_code)
     d = s.execute(stmt).scalar_one_or_none()
     if not d:
@@ -130,7 +132,7 @@ def db_document_outline(s: Session, doc_id: str, user: User | None = None) -> li
     from .agent_presets import SECTION_TITLES  # local import: avoid a module-load cycle
 
     stmt = select(CorpusDocument).where(CorpusDocument.doc_id == doc_id)
-    if user is not None and user.cfc_role != "apex" and not user.is_admin:
+    if user is not None and not reads_all_boards(user):
         stmt = stmt.where(CorpusDocument.division_code == user.division_code)
     doc = s.execute(stmt).scalar_one_or_none()
     if not doc:
@@ -149,9 +151,9 @@ def db_document_outline(s: Session, doc_id: str, user: User | None = None) -> li
     return [(label, SECTION_TITLES.get(label, label.replace("_", " ").title())) for label in seen]
 
 
-def _chunk_to_hit(chunk: CorpusChunk, score: float) -> dict[str, Any]:
+def _chunk_to_hit(chunk: CorpusChunk, score: float, relevance: float | None = None) -> dict[str, Any]:
     doc = chunk.document
-    return {
+    hit = {
         "chunk_id": f"{doc.doc_id}::c{chunk.chunk_index}",
         "doc_id": doc.doc_id,
         "title": doc.title,
@@ -166,6 +168,9 @@ def _chunk_to_hit(chunk: CorpusChunk, score: float) -> dict[str, Any]:
         "division_code": chunk.division_code,
         "score": round(float(score), 4),
     }
+    if relevance is not None:
+        hit["relevance"] = round(float(relevance), 3)
+    return hit
 
 
 def _keyword_boost(text: str, q_tokens: set[str], q_lower: str) -> float:
@@ -210,7 +215,7 @@ def _recency_boost(date_str: str | None) -> float:
     return max(0.0, 0.5 - (days_old / 3650) * 0.5)  # linear decay to 0 over ~10 years
 
 
-def db_search_postgres(
+def _legacy_search_postgres(
     s: Session,
     query: str,
     *,
@@ -256,7 +261,7 @@ def db_search_postgres(
     return [_chunk_to_hit(c, sc) for sc, c in scored[: max(1, min(limit, 25))]]
 
 
-def db_search_sqlite(
+def _legacy_search_sqlite(
     s: Session,
     query: str,
     *,
@@ -303,6 +308,136 @@ def db_search_sqlite(
     return [_chunk_to_hit(c, sc) for sc, c in scored[: max(1, min(limit, 25))]]
 
 
+# --------------------------------------------------------------------------- #
+# Hybrid retrieval + Jev re-rank (CFC_SEARCH_MODE=hybrid, the default)
+#
+# 1. Candidates: the top _CANDIDATES chunks by cosine similarity — in SQL on
+#    Postgres, in numpy on SQLite — so both backends rank the same way.
+# 2. Hybrid score: normalised cosine + bounded whole-word term overlap, with
+#    small section and recency nudges.
+# 3. Diversity: duplicate passages dropped, per-document caps.
+# 4. Jev judges the top _RERANK_POOL for relevance (fail-open).
+# --------------------------------------------------------------------------- #
+
+_CANDIDATES = 40
+_RERANK_POOL = 24
+_MAX_PER_DOC_POOL = 3
+_MAX_PER_DOC_FINAL = 2
+_AGENT_RELEVANCE_FLOOR = 0.35
+_AGENT_MIN_HITS = 2
+_BOILERPLATE = "boilerplate"
+_BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
+
+_STOPWORDS = frozenset(
+    """a an and are as at be by for from has have in into is it its of on or that the this to was were will with
+    which who whom what when where why how all any each few more most other some such no nor not only own same so
+    than too very can just should now also our their them they we you your i me my he she his her us qci quality
+    council india government proposal work order project""".split()
+)
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _terms(text: str) -> set[str]:
+    return {w for w in _WORD_RE.findall((text or "").lower()) if len(w) > 2 and w not in _STOPWORDS}
+
+
+def _query_vector(query: str) -> list[float]:
+    if os.environ.get("CFC_QUERY_PREFIX") == "1" and len(query.split()) < 40:
+        return embed_one(_BGE_QUERY_PREFIX + query)
+    return embed_one(query)
+
+
+def _candidates_postgres(s: Session, qvec: list[float], user: User | None, ministry: str | None) -> list[tuple[CorpusChunk, float]]:
+    stmt = (
+        select(CorpusChunk, CorpusChunk.embedding.cosine_distance(qvec).label("distance"))
+        .join(CorpusDocument, CorpusChunk.document_id == CorpusDocument.id)
+        .options(selectinload(CorpusChunk.document))
+        .where(or_(CorpusChunk.section_label.is_(None), CorpusChunk.section_label != _BOILERPLATE))
+        .order_by("distance")
+        .limit(_CANDIDATES)
+    )
+    stmt = _apply_acl(stmt, user)
+    if ministry:
+        stmt = stmt.where(CorpusDocument.ministry.ilike(f"%{ministry}%"))
+    return [(chunk, 1.0 - float(distance)) for chunk, distance in s.execute(stmt).all()]
+
+
+def _candidates_python(s: Session, qvec: list[float], user: User | None, ministry: str | None) -> list[tuple[CorpusChunk, float]]:
+    import numpy as np  # noqa: PLC0415 — fastembed dependency; dev/SQLite path only
+
+    stmt = (
+        select(CorpusChunk)
+        .join(CorpusDocument, CorpusChunk.document_id == CorpusDocument.id)
+        .options(selectinload(CorpusChunk.document))
+        .where(or_(CorpusChunk.section_label.is_(None), CorpusChunk.section_label != _BOILERPLATE))
+    )
+    stmt = _apply_acl(stmt, user)
+    if ministry:
+        stmt = stmt.where(CorpusDocument.ministry.ilike(f"%{ministry}%"))
+    chunks: list[CorpusChunk] = []
+    vectors: list[list[float]] = []
+    for chunk in s.execute(stmt).scalars().all():
+        vec = from_storage(chunk.embedding, IS_POSTGRES)
+        if vec:
+            chunks.append(chunk)
+            vectors.append(vec)
+    if not chunks:
+        return []
+    mat = np.asarray(vectors, dtype=np.float32)
+    q = np.asarray(qvec, dtype=np.float32)
+    denom = np.linalg.norm(mat, axis=1) * (np.linalg.norm(q) or 1.0)
+    sims = (mat @ q) / np.where(denom == 0, 1.0, denom)
+    top = np.argsort(-sims)[:_CANDIDATES]
+    return [(chunks[i], float(sims[i])) for i in top]
+
+
+def _hybrid_rank(
+    query: str,
+    candidates: list[tuple[CorpusChunk, float]],
+    section_label: str | None,
+    domain: str | None,
+) -> list[tuple[float, CorpusChunk]]:
+    if domain:
+        dl = domain.lower()
+        candidates = [(c, sim) for c, sim in candidates if any(dl in (d or "").lower() for d in (c.document.domains or []))]
+    if not candidates:
+        return []
+    q_terms = _terms(query)
+    sims = [sim for _, sim in candidates]
+    lo, hi = min(sims), max(sims)
+    span = hi - lo
+    seen_text: set[str] = set()
+    scored: list[tuple[float, CorpusChunk]] = []
+    for chunk, sim in candidates:
+        fingerprint = " ".join((chunk.text or "").lower().split())[:240]
+        if fingerprint in seen_text:
+            continue
+        seen_text.add(fingerprint)
+        cos_n = (sim - lo) / span if span > 1e-9 else 1.0
+        lexical = 0.0
+        if q_terms:
+            lexical = len(q_terms & _terms(f"{chunk.document.title} {chunk.text}")) / len(q_terms)
+        score = 0.75 * cos_n + 0.25 * lexical
+        if section_label and chunk.section_label == section_label:
+            score += 0.10
+        score += _recency_boost(chunk.document.date) * 0.1  # at most +0.05
+        scored.append((score, chunk))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
+
+
+def _cap_per_doc(items: list, cap: int, key) -> list:
+    counts: dict[str, int] = {}
+    out = []
+    for item in items:
+        doc_id = key(item)
+        if counts.get(doc_id, 0) >= cap:
+            continue
+        counts[doc_id] = counts.get(doc_id, 0) + 1
+        out.append(item)
+    return out
+
+
 def db_search(
     s: Session,
     query: str,
@@ -311,18 +446,51 @@ def db_search(
     limit: int = 8,
     ministry: str | None = None,
     domain: str | None = None,
+    section: str | None = None,
+    for_agent: bool = False,
+    purpose: str | None = None,
 ) -> list[dict[str, Any]]:
+    """`section`: prefer passages from this corpus section (explicit, from the
+    generator); otherwise inferred from the query's own words.
+    `for_agent`: drop passages Jev judges irrelevant (keeping at least a
+    couple) so the model isn't handed noise to ground on."""
     q = (query or "").strip()
     if not q:
         return []
-    section = _section_hint(q)
-    if IS_POSTGRES:
-        return db_search_postgres(
-            s, q, user=user, limit=limit, ministry=ministry, domain=domain, section_label=section
-        )
-    return db_search_sqlite(
-        s, q, user=user, limit=limit, ministry=ministry, domain=domain, section_label=section
+    section_label = section or _section_hint(q)
+    limit = max(1, min(limit, 25))
+
+    if os.environ.get("CFC_SEARCH_MODE", "hybrid") == "legacy":
+        legacy = _legacy_search_postgres if IS_POSTGRES else _legacy_search_sqlite
+        return legacy(s, q, user=user, limit=limit, ministry=ministry, domain=domain, section_label=section_label)
+
+    qvec = _query_vector(q)
+    candidates = (_candidates_postgres if IS_POSTGRES else _candidates_python)(s, qvec, user, ministry)
+    ranked = _hybrid_rank(q, candidates, section_label, domain)
+    pool = _cap_per_doc(ranked, _MAX_PER_DOC_POOL, key=lambda x: x[1].document.doc_id)[:_RERANK_POOL]
+    if not pool:
+        return []
+
+    from . import jev_rerank  # noqa: PLC0415
+
+    relevance = jev_rerank.rerank(
+        q,
+        purpose,
+        [
+            {"title": c.document.title or "", "section": c.section_label or "", "text": c.text or ""}
+            for _, c in pool
+        ],
     )
+    entries = [(score, chunk, (relevance or {}).get(i)) for i, (score, chunk) in enumerate(pool)]
+    if relevance:
+        entries.sort(key=lambda e: (e[2] if e[2] is not None else -1.0, e[0]), reverse=True)
+        if for_agent:
+            kept = [e for e in entries if (e[2] or 0.0) >= _AGENT_RELEVANCE_FLOOR]
+            if len(kept) < _AGENT_MIN_HITS:
+                kept = entries[:_AGENT_MIN_HITS]
+            entries = kept
+    final = _cap_per_doc(entries, _MAX_PER_DOC_FINAL, key=lambda e: e[1].document.doc_id)[:limit]
+    return [_chunk_to_hit(chunk, score, rel) for score, chunk, rel in final]
 
 
 # --------------------------------------------------------------------------- #
@@ -486,7 +654,7 @@ def recompute_all_edges(s: Session, k: int = 8) -> dict[str, int]:
 
 def _acl_documents_stmt(user: User | None):
     stmt = select(CorpusDocument)
-    if user is not None and user.cfc_role != "apex" and not user.is_admin:
+    if user is not None and not reads_all_boards(user):
         stmt = stmt.where(CorpusDocument.division_code == user.division_code)
     return stmt
 

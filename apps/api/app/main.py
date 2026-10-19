@@ -17,10 +17,12 @@ import hashlib
 import json
 import logging
 import os
+import queue
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Iterator, Literal
 from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
 
@@ -35,7 +37,9 @@ from slowapi.util import get_remote_address
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from .agent_llm import LLMConfig, run_agent_with_fallback
+from .access import reads_all_boards
+from .locks import draft_write_lock
+from .agent_llm import LLMConfig, classify_error, error_frame, run_agent_with_fallback
 from . import auth as auth_mod
 from . import jev_faithfulness
 from . import jev_intake
@@ -108,10 +112,19 @@ def _resolve_template_path(template_code: str | None) -> Path:
 load_dotenv(ROOT / ".env", override=True)
 load_dotenv(override=True)
 
+if auth_mod.auth_mode() == "magic-link" and auth_mod.using_default_secret():
+    # The default secret is public in this repo; anyone could mint a session.
+    raise RuntimeError("CFC_JWT_SECRET must be set when CFC_AUTH_MODE=magic-link")
+
 app = FastAPI(title="CFC API", version="0.3.0")
 
-# Rate limits: keyed by X-CFC-User when present (personas mode), else IP.
+
 def _limit_key(request: Request) -> str:
+    if auth_mod.auth_mode() == "magic-link":
+        claims = auth_mod.decode_jwt(request.cookies.get("cfc_session") or "")
+        if claims and claims.get("sub"):
+            return f"user:{claims['sub']}"
+        return f"ip:{get_remote_address(request)}"
     user = request.headers.get("X-CFC-User")
     if user:
         return f"user:{user}"
@@ -169,6 +182,17 @@ def _startup() -> None:
         log.info("cfc seed: %s", counts)
     except Exception:  # noqa: BLE001
         log.exception("cfc seed failed")
+
+    def _warm_embeddings() -> None:
+        try:
+            from .embeddings import embed_one  # noqa: PLC0415
+
+            embed_one("warm up")
+            log.info("cfc: embedding model warm")
+        except Exception:  # noqa: BLE001
+            log.exception("cfc embedding warm-up failed")
+
+    threading.Thread(target=_warm_embeddings, daemon=True).start()
     try:
         from .ingest import reset_stale_jobs  # noqa: PLC0415
 
@@ -363,11 +387,7 @@ def _manager_of(s: Session, employee_id: str | None) -> User | None:
 
 def _can_view_division(user: User, division_code: str) -> bool:
     """Cross-division visibility gate — see project-cfc-visibility-rule."""
-    if user.cfc_role == "apex":
-        return True
-    if user.is_admin:
-        return True
-    return user.division_code == division_code
+    return reads_all_boards(user) or user.division_code == division_code
 
 
 def _draft_to_dict(draft: Draft) -> dict[str, Any]:
@@ -578,6 +598,31 @@ def me(
         "manager_employee_id": u.manager_employee_id,
         "division_code": u.division_code,
         "auth_mode": auth_mod.auth_mode(),
+        "cross_division_read": reads_all_boards(u),
+        "server_llm": _server_llm(),
+    }
+
+
+_MODEL_LABELS = {
+    "claude-sonnet-5-5": "Claude Sonnet 5.5",
+    "claude-opus-5-5": "Claude Opus 5.5",
+    "claude-haiku-5-5": "Claude Haiku 5.5",
+}
+
+
+def _server_llm() -> dict[str, str] | None:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    model = os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-5-5"
+    return {"provider": "anthropic", "model": model, "label": _MODEL_LABELS.get(model, model)}
+
+
+@app.get("/auth/config")
+def auth_config() -> dict[str, Any]:
+    return {
+        "auth_mode": auth_mod.auth_mode(),
+        "access_code_required": auth_mod.access_code_required(),
+        "email_delivery": auth_mod.email_delivery(),
     }
 
 
@@ -588,6 +633,7 @@ def me(
 
 class MagicLinkBody(BaseModel):
     email: str
+    access_code: str | None = None
 
 
 @app.post("/auth/magic-link")
@@ -601,6 +647,8 @@ def auth_magic_link(request: Request, body: MagicLinkBody) -> dict[str, Any]:
             status_code=403,
             detail=f"Only @{auth_mod.ALLOWED_EMAIL_DOMAIN} addresses can sign in",
         )
+    if not auth_mod.access_code_ok(body.access_code):
+        raise HTTPException(status_code=403, detail="That access code isn't right.")
     link = auth_mod.build_magic_link(email)
     delivery = auth_mod.send_magic_link(email, link)
     # Never leak the link in the response when Resend delivered it.
@@ -662,7 +710,12 @@ def auth_logout(response: Response) -> dict[str, Any]:
 
 
 @app.get("/hierarchy/tree")
-def hierarchy_tree(s: Session = Depends(get_session)) -> dict[str, Any]:
+def hierarchy_tree(
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    _resolve_user(s, x_cfc_user, cfc_session)
     users = s.execute(select(User).order_by(User.cfc_role, User.employee_id)).scalars().all()
     return {
         "version": 2,
@@ -784,13 +837,23 @@ def get_session_endpoint(
     return _session_for(s, user, draft)
 
 
+def _load_visible_draft(s: Session, draft_id: str, x_cfc_user: str | None, cfc_session: str | None) -> Draft:
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    draft = _load_draft(s, draft_id)
+    if not _can_view_division(user, draft.division_code):
+        raise HTTPException(status_code=404, detail=f"Draft not found: {draft_id}")
+    return draft
+
+
 @app.get("/dev/drafts/{draft_id}/file")
 @app.get("/drafts/{draft_id}/file")
 def get_file(
     draft_id: str,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> FileResponse:
-    draft = _load_draft(s, draft_id)
+    draft = _load_visible_draft(s, draft_id, x_cfc_user, cfc_session)
     version_row = next((v for v in draft.versions if v.version == draft.current_version), None)
     if not version_row:
         raise HTTPException(status_code=500, detail="Current version row missing")
@@ -827,32 +890,34 @@ async def put_file(
     if not data:
         raise HTTPException(status_code=400, detail="Empty upload")
 
-    next_v = int(draft.current_version) + 1
-    key = _version_key(draft_id, next_v)
-    _bucket().put(key, data)
+    with draft_write_lock(draft_id):
+        s.refresh(draft)
+        next_v = int(draft.current_version) + 1
+        key = _version_key(draft_id, next_v)
+        _bucket().put(key, data)
 
-    s.add(
-        DraftVersion(
-            draft_id=draft_id,
-            version=next_v,
-            trigger=x_cfc_save_trigger or "manual",
-            sha256=_sha256_bytes(data),
-            storage_key=key,
-            actor_employee_id=user.employee_id,
+        s.add(
+            DraftVersion(
+                draft_id=draft_id,
+                version=next_v,
+                trigger=x_cfc_save_trigger or "manual",
+                sha256=_sha256_bytes(data),
+                storage_key=key,
+                actor_employee_id=user.employee_id,
+            )
         )
-    )
-    draft.current_version = next_v
-    draft.updated_at = _utc_now()
-    _log_audit(
-        s,
-        actor=user,
-        action="draft.save",
-        target_kind="draft",
-        target_id=draft_id,
-        division_code=draft.division_code,
-        details={"version": next_v, "trigger": x_cfc_save_trigger, "bytes": len(data)},
-    )
-    s.commit()
+        draft.current_version = next_v
+        draft.updated_at = _utc_now()
+        _log_audit(
+            s,
+            actor=user,
+            action="draft.save",
+            target_kind="draft",
+            target_id=draft_id,
+            division_code=draft.division_code,
+            details={"version": next_v, "trigger": x_cfc_save_trigger, "bytes": len(data)},
+        )
+        s.commit()
 
     draft = _load_draft(s, draft_id)
     v_entry = next(v for v in draft.versions if v.version == next_v)
@@ -942,9 +1007,11 @@ def draft_diff(
 @app.get("/drafts/{draft_id}/versions")
 def list_versions(
     draft_id: str,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    draft = _load_draft(s, draft_id)
+    draft = _load_visible_draft(s, draft_id, x_cfc_user, cfc_session)
     return {
         "draft_id": draft.id,
         "current_version": draft.current_version,
@@ -970,7 +1037,7 @@ def list_drafts(
     """List drafts visible to caller (own division, or apex/admin sees all)."""
     user = _resolve_user(s, x_cfc_user, cfc_session)
     stmt = select(Draft).options(selectinload(Draft.versions), selectinload(Draft.approvals))
-    if user.cfc_role != "apex" and not user.is_admin:
+    if not reads_all_boards(user):
         stmt = stmt.where(Draft.division_code == user.division_code)
     drafts = s.execute(stmt.order_by(Draft.updated_at.desc())).scalars().all()
     return {
@@ -1124,7 +1191,7 @@ def approvals_inbox(
             selectinload(Draft.threads),
         )
     )
-    if user.cfc_role != "apex" and not user.is_admin:
+    if not reads_all_boards(user):
         stmt = stmt.where(Draft.division_code == user.division_code)
     drafts = s.execute(stmt.order_by(Draft.updated_at.desc())).scalars().all()
 
@@ -1775,11 +1842,16 @@ def _resolve_agent_configs(body_provider: str, body_api_key: str | None, body_mo
     if prov == "mock":
         return [LLMConfig(provider="mock", api_key=None, model=body_model or "")]
 
+    # Retired defaults that older browser bundles still send — never let them
+    # override the server's model choice.
+    if body_model in _STALE_CLIENT_MODELS:
+        body_model = None
+
     if prov and body_api_key:
         return [LLMConfig(provider=prov, api_key=body_api_key, model=body_model or "")]
 
     # auto or partial — build server-side chain
-    order_env = os.environ.get("CFC_AGENT_FALLBACK", "gemini,groq")
+    order_env = os.environ.get("CFC_AGENT_FALLBACK", "anthropic,gemini,groq")
     order = [p.strip().lower() for p in order_env.split(",") if p.strip()]
     if prov and prov != "auto":
         # named provider without a key — still try that provider first from env, then fall back
@@ -1787,12 +1859,16 @@ def _resolve_agent_configs(body_provider: str, body_api_key: str | None, body_mo
 
     configs: list[LLMConfig] = []
     env_key = {
+        "anthropic": os.environ.get("ANTHROPIC_API_KEY"),
+        "claude": os.environ.get("ANTHROPIC_API_KEY"),
         "gemini": os.environ.get("GEMINI_API_KEY"),
         "google": os.environ.get("GEMINI_API_KEY"),
         "openai": os.environ.get("OPENAI_API_KEY"),
         "groq": os.environ.get("GROQ_API_KEY"),
     }
     env_model = {
+        "anthropic": os.environ.get("ANTHROPIC_MODEL"),
+        "claude": os.environ.get("ANTHROPIC_MODEL"),
         "gemini": os.environ.get("GEMINI_MODEL"),
         "google": os.environ.get("GEMINI_MODEL"),
         "openai": os.environ.get("OPENAI_MODEL"),
@@ -1803,10 +1879,51 @@ def _resolve_agent_configs(body_provider: str, body_api_key: str | None, body_mo
         if not key:
             continue
         configs.append(LLMConfig(provider=p, api_key=key, model=(body_model if p == prov else None) or env_model.get(p) or ""))
-    if not configs:
-        # nothing configured — surface as mock so the user isn't blocked
+    if not configs and os.environ.get("CFC_ALLOW_MOCK_FALLBACK") == "1":
         configs = [LLMConfig(provider="mock", api_key=None, model="")]
     return configs
+
+
+_STALE_CLIENT_MODELS = {"claude-haiku-4-5", "gemini-2.0-flash", "llama-3.3-70b-versatile"}
+
+
+_FATAL_AGENT_ERRORS = {"auth", "quota", "config"}
+_HEARTBEAT_SECS = 10.0
+
+
+def _with_heartbeat(gen: Iterator[str]) -> Iterator[str]:
+    """Run the blocking SSE generator on a worker thread and emit an SSE
+    comment whenever it goes quiet, so proxies and the browser don't treat a
+    long model call or document write as a dead connection."""
+    items: queue.Queue = queue.Queue()
+    finished = object()
+    stop = threading.Event()
+
+    def pump() -> None:
+        try:
+            for item in gen:
+                if stop.is_set():
+                    break
+                items.put(item)
+        except Exception:  # noqa: BLE001
+            log.exception("agent stream pump failed")
+        finally:
+            gen.close()
+            items.put(finished)
+
+    threading.Thread(target=pump, daemon=True).start()
+    try:
+        while True:
+            try:
+                item = items.get(timeout=_HEARTBEAT_SECS)
+            except queue.Empty:
+                yield ": ping\n\n"
+                continue
+            if item is finished:
+                return
+            yield item
+    finally:
+        stop.set()
 
 
 @app.post("/drafts/{draft_id}/agent/chat")
@@ -1832,7 +1949,7 @@ def agent_chat(
             session_flags = _session_for(s, user, draft)
 
             if not _can_view_division(user, draft.division_code):
-                yield _sse({"type": "error", "message": "Cross-division access denied"})
+                yield _sse(error_frame("auth", "You don't have access to this document."))
                 return
 
             configs = _resolve_agent_configs(body.provider or "mock", body.api_key, body.model)
@@ -1905,14 +2022,33 @@ def agent_chat(
                 # 6/7-section draft still saves the maker real time, and
                 # DraftVersion history already makes every section a
                 # recoverable checkpoint.
-                yield _sse({"type": "preset", "name": "draft_generator"})
-                yield _sse(start_frame)
                 template_code = str(preset_args.get("template_code") or draft.template_code or "")
                 # The outline set at draft creation (catalog pick, or derived from
                 # an existing corpus document) drives which sections get generated
                 # — GENERATION_SECTIONS is only a fallback for older drafts/codes
                 # with no stored outline.
                 outline = [(row[0], row[1]) for row in (draft.generation_outline or GENERATION_SECTIONS)]
+                yield _sse(
+                    {
+                        "type": "preset",
+                        "name": "draft_generator",
+                        "sections": [{"label": label, "title": title} for label, title in outline],
+                    }
+                )
+                yield _sse(start_frame)
+                if draft.current_version == 1 and (draft.title or "").strip():
+                    title_result = dispatch(
+                        "cfc_propose_insert", {"text": f"# {draft.title.strip()}", "position": "end"}
+                    )
+                    if not title_result.get("error"):
+                        yield _sse(
+                            {
+                                "type": "draft_updated",
+                                "version": title_result.get("version"),
+                                "sha256": title_result.get("sha256"),
+                                "tracked": title_result.get("tracked"),
+                            }
+                        )
                 # Deliberately-chosen precedent from draft_intake (if the user went
                 # through clarification) — re-resolved fresh each run rather than
                 # trusting stored titles, in case ACL/visibility changed since intake.
@@ -1925,9 +2061,20 @@ def agent_chat(
                             key_docs.append({"doc_id": doc_id, "title": doc.get("title", doc_id)})
                 generated: list[str] = []
                 failed: list[str] = []
+                end_after = (
+                    frozenset({"cfc_propose_insert"})
+                    if os.environ.get("CFC_GEN_END_AFTER_INSERT", "1") != "0"
+                    else frozenset()
+                )
+                fatal_error: dict[str, Any] | None = None
                 for section_label, section_title in outline:
+                    if fatal_error is not None:
+                        failed.append(section_label)
+                        yield _sse({"type": "section_result", "section": section_label, "ok": False, "error": fatal_error["message"]})
+                        continue
                     yield _sse({"type": "section_start", "section": section_label, "title": section_title})
                     section_error: str | None = None
+                    section_written = False
                     # Captured purely to feed the post-section faithfulness
                     # check (item 9) below — never used to alter what gets
                     # written to the draft itself.
@@ -1935,17 +2082,22 @@ def agent_chat(
                     section_evidence_parts: list[str] = []
                     for frame in run_agent_with_fallback(
                         configs=configs,
-                        system_prompt=draft_generator_system(section_title),
+                        system_prompt=draft_generator_system(section_title, section_label),
                         user_prompt=draft_generator_user(
                             body.prompt, section_label, section_title, template_code, key_docs
                         ),
                         tool_schemas=TOOL_SCHEMAS,
                         tool_dispatch=dispatch,
+                        end_after_tools=end_after,
                     ):
                         if frame["type"] == "done":
                             continue  # per-section "done" is noise; only the overall loop emits one
                         if frame["type"] == "error":
                             section_error = frame.get("message")
+                            if frame.get("code") in _FATAL_AGENT_ERRORS:
+                                fatal_error = frame
+                        if frame["type"] == "draft_updated":
+                            section_written = True
                         if frame["type"] == "tool_call" and frame.get("name") == "cfc_propose_insert":
                             section_generated_text = str(frame.get("args", {}).get("text") or "")
                         if frame["type"] == "tool_result":
@@ -1958,6 +2110,8 @@ def agent_chat(
                                 if result.get("full_text"):
                                     section_evidence_parts.append(str(result["full_text"])[:4000])
                         yield _sse(frame)
+                    if not section_error and not section_written:
+                        section_error = "This section couldn't be written. Try generating again."
                     if section_error:
                         failed.append(section_label)
                     else:
@@ -2026,15 +2180,16 @@ def agent_chat(
             ):
                 yield _sse(frame)
         except HTTPException as e:
-            yield _sse({"type": "error", "message": f"http {e.status_code}: {e.detail}"})
+            yield _sse(error_frame("auth" if e.status_code in (401, 403) else "unknown", str(e.detail)))
         except Exception as e:  # noqa: BLE001
             log.exception("agent stream failed")
-            yield _sse({"type": "error", "message": f"{type(e).__name__}: {e}"})
+            code, message = classify_error(e)
+            yield _sse(error_frame(code, message))
         finally:
             s.close()
 
     return StreamingResponse(
-        event_stream(),
+        _with_heartbeat(event_stream()),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",
@@ -2277,7 +2432,7 @@ def corpus_graph_preview(
     """
     user = _resolve_user(s, x_cfc_user, cfc_session)
     stmt = select(CorpusDocument).where(CorpusDocument.doc_id == doc_id)
-    if user.cfc_role != "apex" and not user.is_admin:
+    if not reads_all_boards(user):
         stmt = stmt.where(CorpusDocument.division_code == user.division_code)
     doc = s.execute(stmt).scalar_one_or_none()
     if not doc:

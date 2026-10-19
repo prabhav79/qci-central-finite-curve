@@ -32,7 +32,8 @@ import jwt
 log = logging.getLogger("cfc.auth")
 
 ALLOWED_EMAIL_DOMAIN = os.environ.get("CFC_ALLOWED_EMAIL_DOMAIN", "qcin.org")
-JWT_SECRET = os.environ.get("CFC_JWT_SECRET", "cfc-dev-secret-do-not-use-in-prod")
+DEFAULT_JWT_SECRET = "cfc-dev-secret-do-not-use-in-prod"
+JWT_SECRET = os.environ.get("CFC_JWT_SECRET", DEFAULT_JWT_SECRET)
 JWT_ISSUER = os.environ.get("CFC_JWT_ISSUER", "cfc")
 JWT_TTL_HOURS = int(os.environ.get("CFC_JWT_TTL_HOURS", "12"))
 MAGIC_LINK_TTL_MIN = int(os.environ.get("CFC_MAGIC_LINK_TTL_MIN", "15"))
@@ -48,6 +49,31 @@ def auth_mode() -> str:
 
 def email_domain_ok(email: str) -> bool:
     return email.lower().endswith("@" + ALLOWED_EMAIL_DOMAIN.lower())
+
+
+def using_default_secret() -> bool:
+    return JWT_SECRET == DEFAULT_JWT_SECRET
+
+
+def email_delivery() -> str:
+    return "email" if RESEND_API_KEY else "link"
+
+
+def _demo_access_code() -> str:
+    return os.environ.get("CFC_DEMO_ACCESS_CODE", "").strip()
+
+
+def access_code_required() -> bool:
+    # Without email delivery the sign-in link comes back to the browser, so a
+    # shared code is the only thing stopping anyone who knows a seeded email.
+    return bool(_demo_access_code())
+
+
+def access_code_ok(code: str | None) -> bool:
+    expected = _demo_access_code()
+    if not expected:
+        return True
+    return hmac.compare_digest((code or "").strip().encode(), expected.encode())
 
 
 def _sign(payload: str, ttl_min: int) -> str:

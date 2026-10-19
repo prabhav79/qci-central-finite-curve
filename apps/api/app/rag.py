@@ -5,12 +5,15 @@ Uses OpenAI-compatible or Gemini HTTP APIs when keys are present; otherwise extr
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
 from typing import Any
 
 from .corpus import search_corpus
+
+log = logging.getLogger("cfc.rag")
 
 
 def _env(*names: str) -> str | None:
@@ -38,21 +41,28 @@ def build_context(hits: list[dict[str, Any]], max_chars: int = 6000) -> str:
 
 def extractive_answer(query: str, hits: list[dict[str, Any]]) -> str:
     if not hits:
-        return (
-            "No matching institutional documents were found in the current corpus "
-            f"for: {query!r}. Ingest more files or broaden the query."
-        )
-    lines = [
-        f"Found {len(hits)} relevant passage(s) for your query.",
-        "Top sources:",
-    ]
+        return "No matching documents were found in QCI's knowledge base. Try different words."
+    lines = [f"Here are the {min(len(hits), 5)} closest passages from QCI's documents:"]
     for i, h in enumerate(hits[:5], 1):
         snippet = (h.get("text") or "")[:240].replace("\n", " ")
-        lines.append(f"{i}. {h.get('title')} ({h.get('ministry')}) ? {snippet}?")
-    lines.append(
-        "Connect OPENAI_API_KEY or GEMINI_API_KEY for a synthesized grounded answer."
-    )
+        lines.append(f"{i}. {h.get('title')} ({h.get('ministry')}) — {snippet}…")
     return "\n".join(lines)
+
+
+def _anthropic_answer(api_key: str, model: str, system: str, user: str) -> str:
+    from .agent_llm import _ADAPTIVE_THINKING_MODEL_RE, _anthropic_client
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "max_tokens": 4000,
+        "system": system,
+        "messages": [{"role": "user", "content": user}],
+    }
+    if _ADAPTIVE_THINKING_MODEL_RE.match(model):
+        kwargs["thinking"] = {"type": "adaptive"}
+        kwargs["output_config"] = {"effort": "low"}
+    msg = _anthropic_client(api_key).messages.create(**kwargs)
+    return "".join(b.text for b in msg.content if b.type == "text")
 
 
 def _openai_chat(api_key: str, model: str, system: str, user: str) -> str:
@@ -132,14 +142,26 @@ def answer_query(
     # Resolve provider/key
     prov = (provider or "").lower().strip()
     key = api_key
-    if not prov:
-        if key or _env("OPENAI_API_KEY"):
+    if not prov or prov == "auto":
+        if _env("ANTHROPIC_API_KEY"):
+            prov = "anthropic"
+        elif key or _env("OPENAI_API_KEY"):
             prov = "openai"
         elif _env("GEMINI_API_KEY", "GOOGLE_API_KEY"):
             prov = "gemini"
 
     try:
-        if prov == "openai":
+        if prov in {"anthropic", "claude"}:
+            key = key or _env("ANTHROPIC_API_KEY")
+            if key:
+                answer = _anthropic_answer(
+                    key,
+                    model or os.environ.get("ANTHROPIC_MODEL") or "claude-sonnet-5-5",
+                    system,
+                    user_prompt,
+                )
+                used_provider = "anthropic"
+        elif prov == "openai":
             key = key or _env("OPENAI_API_KEY")
             if key:
                 answer = _openai_chat(
@@ -154,13 +176,14 @@ def answer_query(
             if key:
                 answer = _gemini_generate(
                     key,
-                    model or os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
+                    model or os.environ.get("GEMINI_MODEL", "gemini-flash-latest"),
                     f"{system}\n\n{user_prompt}",
                 )
                 used_provider = "gemini"
     except Exception as e:  # noqa: BLE001
+        log.warning("RAG answer via %s failed: %s", prov, e)
         error = str(e)
-        answer = extractive_answer(query, hits) + f"\n\n(LLM error: {error})"
+        answer = extractive_answer(query, hits)
         used_provider = "extractive_fallback"
 
     return {

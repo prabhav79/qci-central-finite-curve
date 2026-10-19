@@ -46,7 +46,19 @@ def _api_key() -> str:
     return key
 
 
-def evaluate(state: str, questions: dict[str, dict], timeout: float | None = None) -> dict[str, dict]:
+_client: httpx.Client | None = None
+
+
+def _http() -> httpx.Client:
+    # One pooled client: reusing the TLS connection saves a handshake per call,
+    # which matters for the latency-sensitive callers (intake, search re-rank).
+    global _client
+    if _client is None:
+        _client = httpx.Client(timeout=TIMEOUT_SEC)
+    return _client
+
+
+def evaluate(state: str | dict, questions: dict[str, dict], timeout: float | None = None) -> dict[str, dict]:
     """POST one batched /v1/systemone call and return the raw `answers` dict.
 
     Batch everything into ONE call — the whole point of Jev's pricing/speed
@@ -60,15 +72,15 @@ def evaluate(state: str, questions: dict[str, dict], timeout: float | None = Non
     unlike jev_faithfulness's post-hoc check which is amortized against a
     wait the user already expects.
     """
-    with httpx.Client(timeout=timeout if timeout is not None else TIMEOUT_SEC) as client:
-        resp = client.post(
-            TYPESAFE_URL,
-            headers={
-                "Authorization": f"Bearer {_api_key()}",
-                "Content-Type": "application/json",
-            },
-            json={"model": JEV_MODEL, "state": state, "questions": questions},
-        )
+    resp = _http().post(
+        TYPESAFE_URL,
+        headers={
+            "Authorization": f"Bearer {_api_key()}",
+            "Content-Type": "application/json",
+        },
+        json={"model": JEV_MODEL, "state": state, "questions": questions},
+        timeout=timeout if timeout is not None else TIMEOUT_SEC,
+    )
     if resp.status_code >= 400:
         raise RuntimeError(f"TypeSafe HTTP {resp.status_code}: {resp.text[:400]}")
     try:
