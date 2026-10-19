@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { renderAnswerText } from "@/lib/inlineMarkdown";
 import {
   type CorpusHit,
   type PersonaKey,
@@ -101,7 +102,7 @@ export function RagPanel({
             className={m.role === "user" ? "rounded-lg bg-accent/10 p-2 text-text" : "rounded-lg bg-surface-raised p-2 text-text"}
           >
             {m.role === "user" && <div className="mb-0.5 text-xs font-medium text-text-muted">You asked</div>}
-            <div className="whitespace-pre-wrap">{m.content}</div>
+            <div className="whitespace-pre-wrap">{m.role === "user" ? m.content : renderAnswerText(m.content)}</div>
             {m.citations && m.citations.length > 0 && (
               <div className="mt-2 border-t border-border pt-2">
                 <div className="mb-1 text-xs font-medium text-text-muted">Sources</div>

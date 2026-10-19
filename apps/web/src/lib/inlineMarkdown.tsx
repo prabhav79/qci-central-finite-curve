@@ -25,3 +25,31 @@ export function renderInlineEmphasis(text: string): ReactNode[] {
   if (pos < text.length) nodes.push(text.slice(pos));
   return nodes;
 }
+
+const TABLE_RULE_RE = /^\s*\|?[\s:|-]*-{2,}[\s:|-]*\|?\s*$/;
+const TABLE_ROW_RE = /^\s*\|(.*)\|\s*$/;
+
+/** Plain rendering of a longer model answer that may still carry markdown:
+ * headings lose their #, table rows become "a · b" lines (rule rows are
+ * dropped), bold and italic render as such. Keep the container
+ * `whitespace-pre-wrap` so line breaks and "-" bullets survive. */
+export function renderAnswerText(text: string): ReactNode[] {
+  const out: ReactNode[] = [];
+  text
+    .replace(/\r/g, "")
+    .split("\n")
+    .forEach((raw, i) => {
+      if (TABLE_RULE_RE.test(raw)) return;
+      const row = TABLE_ROW_RE.exec(raw);
+      const line = row
+        ? row[1].split("|").map((c) => c.trim()).filter(Boolean).join(" · ")
+        : raw.replace(/^\s*#{1,6}\s+/, "");
+      out.push(
+        <span key={i}>
+          {renderInlineEmphasis(line)}
+          {"\n"}
+        </span>,
+      );
+    });
+  return out;
+}

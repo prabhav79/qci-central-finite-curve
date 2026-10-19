@@ -19,14 +19,30 @@ import { useCurrentUser } from "@/lib/useCurrentUser";
 
 // react-force-graph-2d touches window/canvas at import time, so it must load
 // client-side only (Next.js App Router server components can't see it).
-const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
-  ssr: false,
-  loading: () => (
-    <div className="flex h-full items-center justify-center text-[13px] text-text-muted">
-      Loading…
-    </div>
-  ),
-});
+// next/dynamic doesn't forward refs, so the graph's methods (zoomToFit,
+// d3Force) are reached through an ordinary `graphRef` prop instead.
+type GraphHandle = {
+  zoomToFit: (ms?: number, padding?: number) => void;
+  d3Force: (name: string) => { strength?: (v: number) => unknown; distance?: (v: number) => unknown } | undefined;
+};
+const ForceGraph2D = dynamic(
+  () =>
+    import("react-force-graph-2d").then((mod) => {
+      const Graph = mod.default as unknown as React.ComponentType<Record<string, unknown>>;
+      function GraphWithRef({ graphRef, ...props }: Record<string, unknown> & { graphRef?: React.Ref<GraphHandle> }) {
+        return <Graph {...props} ref={graphRef} />;
+      }
+      return GraphWithRef;
+    }),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center text-[13px] text-text-muted">
+        Loading…
+      </div>
+    ),
+  },
+);
 
 type NodeType = "root" | GraphNode["type"];
 
@@ -130,6 +146,14 @@ export function KnowledgeGraph() {
   }, [resolvedTheme]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const graphRef = useRef<GraphHandle | null>(null);
+  // Stronger repulsion and longer links than the library default, so the
+  // ministry labels around the root don't pile on top of each other.
+  const attachGraph = useCallback((g: GraphHandle | null) => {
+    graphRef.current = g;
+    g?.d3Force("charge")?.strength?.(-260);
+    g?.d3Force("link")?.distance?.(70);
+  }, []);
   const [dims, setDims] = useState({ width: 0, height: 0 });
 
   // All nodes/edges ever fetched, keyed by id — kept in refs so node object
@@ -396,6 +420,10 @@ export function KnowledgeGraph() {
                 ctx.fill();
               }}
               cooldownTicks={100}
+              graphRef={attachGraph}
+              // Spread nodes so labels don't pile up, then frame the whole
+              // graph once it settles (and again after each expand).
+              onEngineStop={() => graphRef.current?.zoomToFit(500, 48)}
             />
           )}
 

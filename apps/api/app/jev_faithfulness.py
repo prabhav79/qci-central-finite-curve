@@ -58,13 +58,18 @@ _NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 # Two or more capitals: PMMSY, KIIs, SDC&FPO, and mixed-case DoF / MoU.
 _ACRONYM_RE = re.compile(r"\b[A-Z][A-Za-z&]*[A-Z][A-Za-z&]*\b")
 # "and" is not a name connector: "Field Supervisors and Enumerators" is two
-# names, checked separately.
-_NAME_RE = re.compile(r"\b[A-Z][a-z]+\b(?:(?:\s+(?:of|for|the)\s+|\s+)[A-Z][a-z]+\b)*")
+# names, checked separately. "&" is: formal names use it ("Department of
+# Animal Husbandry & Dairying", which then expands DAHD).
+_NAME_RE = re.compile(r"\b[A-Z][a-z]+\b(?:(?:\s+(?:of|for|the|&)\s+|\s+)[A-Z][a-z]+\b)*")
 # Phrases an acronym can abbreviate: "Department of Fisheries" -> DoF / DF.
 _EXPANSION_RE = re.compile(r"\b[A-Z][a-z]+\b(?:\s+(?:(?:of|for|the|and|&)\s+)?[A-Z][a-z]+\b)+")
 _CONNECTORS = {"of", "for", "the", "and", "&"}
-# QCI writes every proposal, so its own name never needs a source.
-_AUTHOR = "Quality Council of India (QCI)"
+# QCI writes every proposal, so its own name never needs a source; nor do
+# the names of the document types it drafts ("this Work Order shall…").
+_AUTHOR = (
+    "Quality Council of India (QCI). Document types: Proposal, Work Order, Terms of Reference, "
+    "Memorandum of Understanding, Request for Proposal, Detailed Project Report."
+)
 _DETERMINERS = {"The", "This", "These", "That", "Those", "A", "An", "Each", "Our", "Its", "Their", "All", "Any"}
 
 

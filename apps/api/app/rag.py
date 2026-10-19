@@ -135,7 +135,8 @@ def answer_query(
     system = (
         "You are CFC, an assistant for Quality Council of India institutional drafting. "
         "Answer ONLY using the provided context passages. Cite sources as [n]. "
-        "If context is insufficient, say what is missing. Be concise and operational."
+        "If context is insufficient, say what is missing. Be concise and operational. "
+        "Write plain sentences and short '-' bullet points; no headings, bold text or tables."
     )
     user_prompt = redact(f"Question:\n{query}\n\nContext passages:\n{context}\n\nAnswer with citations.")
 
