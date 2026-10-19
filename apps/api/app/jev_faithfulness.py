@@ -114,7 +114,8 @@ def _fact_tokens(sentence: str) -> list[tuple[str, str]]:
 
 def _initials(text: str) -> set[str]:
     """Lower-cased initials of every capitalised phrase (and its tails), with
-    and without connector initials: "The Department of Fisheries" -> dof, df."""
+    and without connector initials: "The Department of Fisheries" -> dof, df;
+    "Ministry of Labour & Employment" -> mole (and/& dropped), mle."""
     out: set[str] = set()
     for m in _EXPANSION_RE.finditer(text):
         words = m.group(0).split()
@@ -124,6 +125,7 @@ def _initials(text: str) -> set[str]:
             tail = words[i:]
             out.add("".join(t[0] for t in tail).lower())
             out.add("".join(t[0] for t in tail if t not in _CONNECTORS).lower())
+            out.add("".join(t[0] for t in tail if t not in {"and", "&"}).lower())
     return out
 
 
@@ -139,10 +141,15 @@ def _supported(kind: str, token: str, evidence_norm: str, initials: set[str]) ->
     if kind == "acr":
         return token.lower() in initials  # abbreviation of a name used in the text
     if kind == "name" and " " in token:
+        words = [w for w in token.split() if w not in _CONNECTORS]
+        # The expansion of an acronym the evidence uses ("Project Management
+        # Unit" when the brief says "PMU").
+        if len(words) >= 3 and _in_evidence("".join(w[0] for w in words), evidence_norm):
+            return True
         # Role and document titles ("State Coordinators", "Draft Report") are
         # ordinary words capitalised; invented programme names still carry a
         # number or acronym that fails above.
-        return all(_in_evidence(w, evidence_norm) for w in token.split() if w not in _CONNECTORS)
+        return all(_in_evidence(w, evidence_norm) for w in words)
     return False
 
 

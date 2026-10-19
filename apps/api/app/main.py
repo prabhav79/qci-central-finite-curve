@@ -80,6 +80,17 @@ from .storage import Bucket, default_bucket
 
 log = logging.getLogger("cfc.api")
 
+# Nothing else configures the app's own loggers, so without this every
+# info line (model usage per call, search re-rank timing, faithfulness
+# misses) is dropped and only warnings reach the platform logs.
+_cfc_log = logging.getLogger("cfc")
+if not _cfc_log.handlers:
+    _cfc_handler = logging.StreamHandler()
+    _cfc_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    _cfc_log.addHandler(_cfc_handler)
+    _cfc_log.setLevel(os.environ.get("CFC_LOG_LEVEL", "INFO").upper())
+    _cfc_log.propagate = False
+
 TEMPLATES_DIR = ROOT / "packages" / "doc-fixtures" / "templates"
 # Every new draft seeds from this — a genuinely empty document. Structure
 # (which sections exist, in what order) comes entirely from the chosen
