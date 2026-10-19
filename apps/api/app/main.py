@@ -19,6 +19,7 @@ import logging
 import os
 import queue
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +30,7 @@ from urllib.error import HTTPError, URLError
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -40,6 +41,7 @@ from sqlalchemy.orm import Session, selectinload
 from .access import reads_all_boards
 from .locks import draft_write_lock
 from .agent_llm import LLMConfig, classify_error, error_frame, run_agent_with_fallback
+from .ai_guard import AI_OFF_MESSAGE, CONFIDENTIAL_MESSAGE, ai_enabled
 from . import auth as auth_mod
 from . import jev_faithfulness
 from . import jev_intake
@@ -165,6 +167,16 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _no_dev_routes_outside_dev(request: Request, call_next):
+    """The /dev/* routes exist for local persona testing only. With real
+    sign-in they are switched off entirely (CERT-In CIAD-2026-0049: retire
+    test and dormant APIs)."""
+    if request.url.path.startswith("/dev/") and auth_mod.auth_mode() == "magic-link":
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
+    return await call_next(request)
+
+
 DraftStatus = Literal[
     "DRAFT",
     "PENDING_L1_REVIEW",
@@ -237,6 +249,8 @@ class CreateDraftBody(BaseModel):
     # session, not a hardcoded persona. Only an explicit value here overrides it
     # (e.g. an admin creating on behalf of someone else).
     maker_employee_id: str | None = None
+    # Confidential: no AI help, nothing sent to outside services (ai_guard).
+    ai_restricted: bool = False
 
 
 class DecideBody(BaseModel):
@@ -306,6 +320,9 @@ class RagBody(BaseModel):
     provider: str | None = None
     api_key: str | None = None
     model: str | None = None
+    # The document the question is asked from, if any: a confidential one
+    # gets matching passages only, with nothing sent to an AI service.
+    draft_id: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -414,6 +431,7 @@ def _draft_to_dict(draft: Draft) -> dict[str, Any]:
         "maker_employee_id": draft.maker_employee_id,
         "division_code": draft.division_code,
         "status": draft.status,
+        "ai_restricted": bool(draft.ai_restricted),
         "current_version": draft.current_version,
         "submitted_version": draft.submitted_version,
         "versions": [
@@ -573,6 +591,66 @@ def _log_audit(
             details=details,
         )
     )
+
+
+def _audited_ai(
+    frames: Iterator[dict[str, Any]],
+    *,
+    purpose: str,
+    actor_id: str,
+    draft_id: str,
+    division_code: str | None,
+) -> Iterator[dict[str, Any]]:
+    """Passes one AI conversation's frames through, minus the internal usage
+    frames, and records the call in the audit log: who, which document, the
+    model, tokens, the tools it used and the outcome. CERT-In asks for a
+    tamper-resistant log of what AI agents do; nothing in the app edits or
+    deletes audit rows."""
+    started = time.monotonic()
+    usage = {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0}
+    models: set[str] = set()
+    tools: list[str] = []
+    outcome = "ok"
+    try:
+        for frame in frames:
+            kind = frame.get("type")
+            if kind == "usage":
+                usage["calls"] += 1
+                for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+                    usage[key] += int(frame.get(key) or 0)
+                if frame.get("model"):
+                    models.add(str(frame["model"]))
+                continue
+            if kind == "tool_call":
+                tools.append(str(frame.get("name")))
+            elif kind == "error":
+                outcome = str(frame.get("code") or "error")
+            yield frame
+    finally:
+        details = {
+            "purpose": purpose,
+            "models": sorted(models),
+            **usage,
+            "tools": tools,
+            "outcome": outcome,
+            "seconds": round(time.monotonic() - started, 1),
+        }
+        log.info("ai call %s draft=%s %s", purpose, draft_id, details)
+        try:
+            with SessionLocal() as audit_s:
+                audit_s.add(
+                    AuditLog(
+                        actor_employee_id=actor_id,
+                        action="ai.call",
+                        target_kind="draft",
+                        target_id=draft_id,
+                        division_code=division_code,
+                        details=details,
+                    )
+                )
+                audit_s.commit()
+        except Exception:  # noqa: BLE001
+            log.exception("could not record an AI call in the audit log")
 
 
 def _version_key(draft_id: str, version: int) -> str:
@@ -795,6 +873,7 @@ def create_draft(
         status="DRAFT",
         current_version=1,
         generation_outline=[list(pair) for pair in outline] if outline else None,
+        ai_restricted=body.ai_restricted,
     )
     s.add(draft)
     s.add(
@@ -814,7 +893,7 @@ def create_draft(
         target_kind="draft",
         target_id=draft_id,
         division_code=draft.division_code,
-        details={"template_code": body.template_code, "title": body.title},
+        details={"template_code": body.template_code, "title": body.title, "ai_restricted": body.ai_restricted},
     )
     s.commit()
 
@@ -1633,7 +1712,9 @@ def rag_query(
         )
     else:
         hits = inmem_search(body.query, limit=body.limit, ministry=body.ministry)
-    return answer_query(
+    draft = s.get(Draft, body.draft_id) if body.draft_id else None
+    allow_ai = ai_enabled() and not (draft and draft.ai_restricted)
+    result = answer_query(
         body.query,
         limit=body.limit,
         ministry=body.ministry,
@@ -1641,7 +1722,22 @@ def rag_query(
         api_key=body.api_key,
         model=body.model,
         prefetched_hits=hits,
+        allow_ai=allow_ai,
     )
+    if result.get("provider") not in {"extractive", "extractive_fallback"}:
+        _log_audit(
+            s,
+            actor=user,
+            action="ai.research",
+            target_kind="draft" if draft else "corpus",
+            target_id=draft.id if draft else "-",
+            division_code=draft.division_code if draft else user.division_code,
+            details={"provider": result.get("provider"), "sources": len(hits)},
+        )
+        s.commit()
+    if not allow_ai:
+        result["notice"] = AI_OFF_MESSAGE if not ai_enabled() else CONFIDENTIAL_MESSAGE
+    return result
 
 
 @app.post("/corpus/reload")
@@ -1962,6 +2058,12 @@ def agent_chat(
             if not _can_view_division(user, draft.division_code):
                 yield _sse(error_frame("auth", "You don't have access to this document."))
                 return
+            if not ai_enabled():
+                yield _sse(error_frame("ai_off", AI_OFF_MESSAGE))
+                return
+            if draft.ai_restricted:
+                yield _sse(error_frame("confidential", CONFIDENTIAL_MESSAGE))
+                return
 
             configs = _resolve_agent_configs(body.provider or "mock", body.api_key, body.model)
             preset = (body.preset or "").lower().strip()
@@ -2011,16 +2113,22 @@ def agent_chat(
                 # not just a prompt instruction.
                 yield _sse({"type": "preset", "name": "redline_extender"})
                 yield _sse(start_frame)
-                for frame in run_agent_with_fallback(
-                    configs=configs,
-                    system_prompt=redline_extender_system(),
-                    user_prompt=redline_extender_user(
-                        task=body.prompt,
-                        focus_areas=str(preset_args.get("focus_areas", "")),
-                        hints=str(preset_args.get("hints", "")),
+                for frame in _audited_ai(
+                    run_agent_with_fallback(
+                        configs=configs,
+                        system_prompt=redline_extender_system(),
+                        user_prompt=redline_extender_user(
+                            task=body.prompt,
+                            focus_areas=str(preset_args.get("focus_areas", "")),
+                            hints=str(preset_args.get("hints", "")),
+                        ),
+                        tool_schemas=REVIEWER_TOOL_SCHEMAS,
+                        tool_dispatch=dispatch,
                     ),
-                    tool_schemas=REVIEWER_TOOL_SCHEMAS,
-                    tool_dispatch=dispatch,
+                    purpose="review",
+                    actor_id=user.employee_id,
+                    draft_id=draft_id,
+                    division_code=draft.division_code,
                 ):
                     yield _sse(frame)
                 return
@@ -2091,15 +2199,21 @@ def agent_chat(
                     # written to the draft itself.
                     section_generated_text = ""
                     section_evidence_parts: list[str] = []
-                    for frame in run_agent_with_fallback(
-                        configs=configs,
-                        system_prompt=draft_generator_system(section_title, section_label),
-                        user_prompt=draft_generator_user(
-                            body.prompt, section_label, section_title, template_code, key_docs
+                    for frame in _audited_ai(
+                        run_agent_with_fallback(
+                            configs=configs,
+                            system_prompt=draft_generator_system(section_title, section_label),
+                            user_prompt=draft_generator_user(
+                                body.prompt, section_label, section_title, template_code, key_docs
+                            ),
+                            tool_schemas=TOOL_SCHEMAS,
+                            tool_dispatch=dispatch,
+                            end_after_tools=end_after,
                         ),
-                        tool_schemas=TOOL_SCHEMAS,
-                        tool_dispatch=dispatch,
-                        end_after_tools=end_after,
+                        purpose="generate_section",
+                        actor_id=user.employee_id,
+                        draft_id=draft_id,
+                        division_code=draft.division_code,
                     ):
                         if frame["type"] == "done":
                             continue  # per-section "done" is noise; only the overall loop emits one
@@ -2173,12 +2287,18 @@ def agent_chat(
                 # at all (see agent_presets.draft_intake_system's force_final doc).
                 force_final = turn_count >= MAX_INTAKE_TURNS
                 gaps = [] if force_final else jev_intake.detect_gaps(draft.title or "", brief, transcript)
-                for frame in run_agent_with_fallback(
-                    configs=configs,
-                    system_prompt=draft_intake_system(force_final=force_final),
-                    user_prompt=draft_intake_user(brief, transcript, turn_count, title=draft.title or "", gaps=gaps),
-                    tool_schemas=INTAKE_TOOL_SCHEMAS,
-                    tool_dispatch=dispatch,
+                for frame in _audited_ai(
+                    run_agent_with_fallback(
+                        configs=configs,
+                        system_prompt=draft_intake_system(force_final=force_final),
+                        user_prompt=draft_intake_user(brief, transcript, turn_count, title=draft.title or "", gaps=gaps),
+                        tool_schemas=INTAKE_TOOL_SCHEMAS,
+                        tool_dispatch=dispatch,
+                    ),
+                    purpose="intake",
+                    actor_id=user.employee_id,
+                    draft_id=draft_id,
+                    division_code=draft.division_code,
                 ):
                     if frame["type"] == "ready_to_generate":
                         # Persist so the (separate) draft_generator request can
@@ -2194,12 +2314,18 @@ def agent_chat(
             # into DEFAULT_AGENT_SYSTEM — it was never a distinct capability, just
             # a canned instruction sequence the default prompt now always follows).
             yield _sse(start_frame)
-            for frame in run_agent_with_fallback(
-                configs=configs,
-                system_prompt=DEFAULT_AGENT_SYSTEM,
-                user_prompt=body.prompt,
-                tool_schemas=TOOL_SCHEMAS,
-                tool_dispatch=dispatch,
+            for frame in _audited_ai(
+                run_agent_with_fallback(
+                    configs=configs,
+                    system_prompt=DEFAULT_AGENT_SYSTEM,
+                    user_prompt=body.prompt,
+                    tool_schemas=TOOL_SCHEMAS,
+                    tool_dispatch=dispatch,
+                ),
+                purpose="chat",
+                actor_id=user.employee_id,
+                draft_id=draft_id,
+                division_code=draft.division_code,
             ):
                 yield _sse(frame)
         except HTTPException as e:

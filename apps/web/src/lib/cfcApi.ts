@@ -235,6 +235,8 @@ export type DraftRecord = {
   id: string;
   title?: string;
   status: string;
+  /** Confidential: no AI help, nothing sent to outside services. */
+  ai_restricted?: boolean;
   current_version: number;
   division_code?: string;
   maker_employee_id?: string;
@@ -318,7 +320,7 @@ export async function createDraft(
   persona: PersonaKey,
   title: string,
   templateCode = "BLANK",
-  opts?: { templateSource?: "catalog" | "corpus_doc"; corpusDocId?: string },
+  opts?: { templateSource?: "catalog" | "corpus_doc"; corpusDocId?: string; aiRestricted?: boolean },
 ) {
   return apiJson<{ draft: DraftRecord; session: DraftSession }>("/drafts", persona, {
     method: "POST",
@@ -327,6 +329,7 @@ export async function createDraft(
       template_code: templateCode,
       template_source: opts?.templateSource ?? "catalog",
       corpus_doc_id: opts?.corpusDocId,
+      ai_restricted: opts?.aiRestricted ?? false,
     }),
   });
 }
@@ -903,7 +906,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
 export async function ragQuery(
   persona: PersonaKey,
   query: string,
-  opts?: { limit?: number; provider?: string; api_key?: string },
+  opts?: { limit?: number; provider?: string; api_key?: string; draftId?: string | null },
 ) {
   return apiJson<{
     query: string;
@@ -911,6 +914,8 @@ export async function ragQuery(
     provider: string;
     citations: CorpusHit[];
     error?: string | null;
+    /** Set when no AI was used: switched off, or a confidential document. */
+    notice?: string;
   }>("/rag/query", persona, {
     method: "POST",
     body: JSON.stringify({
@@ -918,6 +923,7 @@ export async function ragQuery(
       limit: opts?.limit ?? 6,
       provider: opts?.provider,
       api_key: opts?.api_key,
+      draft_id: opts?.draftId ?? undefined,
     }),
   });
 }

@@ -17,10 +17,13 @@ type Msg = {
 
 export function RagPanel({
   persona,
+  draftId,
   onInsertCitation,
   canInsert,
 }: {
   persona: PersonaKey;
+  /** The open document; a confidential one gets matching passages only, no AI. */
+  draftId?: string | null;
   /** Resolves to the message to show (e.g. "Added to the document"). */
   onInsertCitation?: (hit: CorpusHit) => Promise<string | void> | string | void;
   canInsert?: boolean;
@@ -48,9 +51,11 @@ export function RagPanel({
     setMsgs((m) => [...m, { role: "user", content: q }]);
     setInput("");
     try {
-      const res = await ragQuery(persona, q, { limit: 6 });
+      const res = await ragQuery(persona, q, { limit: 6, draftId });
       setMsgs((m) => [...m, { role: "assistant", content: res.answer, citations: res.citations }]);
-      if (res.error) {
+      if (res.notice) {
+        setNotice(`${res.notice} The most relevant passages are shown instead.`);
+      } else if (res.error) {
         setNotice("A written answer isn't available right now, so the most relevant passages are shown.");
       }
     } catch (e) {

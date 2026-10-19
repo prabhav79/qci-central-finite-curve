@@ -42,9 +42,10 @@ export function NewDraftModal({
   serverLlm: ServerLlm | null | undefined;
   isAdmin: boolean;
   onCancel: () => void;
-  onConfirm: (title: string, brief: string, template: TemplateChoice) => Promise<void> | void;
+  onConfirm: (title: string, brief: string, template: TemplateChoice, confidential: boolean) => Promise<void> | void;
 }) {
   const [title, setTitle] = useState("");
+  const [confidential, setConfidential] = useState(false);
   const [catalog, setCatalog] = useState<GenerationTemplate[]>([]);
   const [mode, setMode] = useState<"catalog" | "corpus_doc">("catalog");
   const [templateCode, setTemplateCode] = useState("BLANK");
@@ -58,6 +59,7 @@ export function NewDraftModal({
   useEffect(() => {
     if (!open) return;
     setTitle(defaultTitle());
+    setConfidential(false);
     setBrief("");
     setError(null);
     setMode("catalog");
@@ -102,7 +104,8 @@ export function NewDraftModal({
       setError("Pick a document to base the layout on, or switch back to a standard template.");
       return;
     }
-    if (brief.trim() && !choiceReady(choice)) {
+    const draftBrief = confidential ? "" : brief.trim();
+    if (draftBrief && !choiceReady(choice)) {
       setError(missingKeyMessage(choice));
       return;
     }
@@ -112,7 +115,7 @@ export function NewDraftModal({
         ? { source: "corpus_doc", corpusDocId: selectedDoc!.doc_id }
         : { source: "catalog", templateCode };
     try {
-      await onConfirm(title.trim(), brief.trim(), template);
+      await onConfirm(title.trim(), draftBrief, template, confidential);
     } catch (e) {
       setError(errorText(e));
     }
@@ -229,24 +232,42 @@ export function NewDraftModal({
         )}
       </div>
 
-      <label className="mt-3 block text-[13px] text-text-muted">
-        Describe what you need <span className="text-text-muted/80">(optional — we&apos;ll write a first draft)</span>
-        <textarea
-          value={brief}
-          onChange={(e) => setBrief(e.target.value)}
-          rows={3}
-          placeholder='e.g. "Proposal for grievance redressal in Maharashtra, building on our CPGRAMS work"'
-          className="mt-1 w-full resize-none rounded-lg border border-border-strong bg-surface-sunken px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
+      <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-lg border border-border px-2.5 py-2 text-[13px] text-text">
+        <input
+          type="checkbox"
+          aria-label="Confidential: draft without AI"
+          checked={confidential}
+          onChange={(e) => setConfidential(e.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
         />
-        {brief.trim() && (
-          <span className="mt-1 block text-xs text-status-approved-text">
-            The assistant will ask a few quick questions, then write each section using QCI&apos;s past
-            documents as reference.
+        <span>
+          <span className="font-medium">Confidential: draft without AI</span>
+          <span className="block text-xs text-text-muted">
+            Nothing in this document is sent to outside AI services. This can&apos;t be changed later.
           </span>
-        )}
+        </span>
       </label>
 
-      {brief.trim() && (
+      {!confidential && (
+        <label className="mt-3 block text-[13px] text-text-muted">
+          Describe what you need <span className="text-text-muted/80">(optional — we&apos;ll write a first draft)</span>
+          <textarea
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+            rows={3}
+            placeholder='e.g. "Proposal for grievance redressal in Maharashtra, building on our CPGRAMS work"'
+            className="mt-1 w-full resize-none rounded-lg border border-border-strong bg-surface-sunken px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
+          />
+          {brief.trim() && (
+            <span className="mt-1 block text-xs text-status-approved-text">
+              The assistant will ask a few quick questions, then write each section using QCI&apos;s past
+              documents as reference.
+            </span>
+          )}
+        </label>
+      )}
+
+      {!confidential && brief.trim() && (
         <div className="mt-2">
           <ModelPicker
             choice={choice}
@@ -275,7 +296,7 @@ export function NewDraftModal({
           disabled={busy}
           className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
         >
-          {busy ? "Creating…" : brief.trim() ? "Create & continue" : "Create"}
+          {busy ? "Creating…" : !confidential && brief.trim() ? "Create & continue" : "Create"}
         </button>
       </div>
     </Modal>

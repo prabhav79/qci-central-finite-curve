@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from .ai_guard import redact
 from .corpus import search_corpus
 
 log = logging.getLogger("cfc.rag")
@@ -122,7 +123,10 @@ def answer_query(
     api_key: str | None = None,
     model: str | None = None,
     prefetched_hits: list[dict[str, Any]] | None = None,
+    allow_ai: bool = True,
 ) -> dict[str, Any]:
+    """`allow_ai=False` (AI switched off, or a confidential document) returns
+    the extractive answer: matching passages only, nothing sent out."""
     hits = prefetched_hits if prefetched_hits is not None else search_corpus(
         query, limit=limit, ministry=ministry
     )
@@ -133,14 +137,14 @@ def answer_query(
         "Answer ONLY using the provided context passages. Cite sources as [n]. "
         "If context is insufficient, say what is missing. Be concise and operational."
     )
-    user_prompt = f"Question:\n{query}\n\nContext passages:\n{context}\n\nAnswer with citations."
+    user_prompt = redact(f"Question:\n{query}\n\nContext passages:\n{context}\n\nAnswer with citations.")
 
     used_provider = "extractive"
     answer = extractive_answer(query, hits)
     error = None
 
     # Resolve provider/key
-    prov = (provider or "").lower().strip()
+    prov = (provider or "").lower().strip() if allow_ai else "none"
     key = api_key
     if not prov or prov == "auto":
         if _env("ANTHROPIC_API_KEY"):

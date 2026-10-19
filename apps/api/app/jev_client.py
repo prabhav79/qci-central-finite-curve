@@ -28,6 +28,8 @@ import os
 
 import httpx
 
+from .ai_guard import ai_enabled, redact_any
+
 log = logging.getLogger("cfc.jev")
 
 TYPESAFE_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
@@ -36,7 +38,9 @@ TIMEOUT_SEC = float(os.environ.get("TYPESAFE_TIMEOUT_SEC", "15"))
 
 
 def is_configured() -> bool:
-    return bool(os.environ.get("TYPESAFE_API_KEY"))
+    # The AI kill switch covers Jev too: every caller already treats
+    # "not configured" as "skip and fall back".
+    return bool(os.environ.get("TYPESAFE_API_KEY")) and ai_enabled()
 
 
 def _api_key() -> str:
@@ -78,7 +82,7 @@ def evaluate(state: str | dict, questions: dict[str, dict], timeout: float | Non
             "Authorization": f"Bearer {_api_key()}",
             "Content-Type": "application/json",
         },
-        json={"model": JEV_MODEL, "state": state, "questions": questions},
+        json={"model": JEV_MODEL, "state": redact_any(state), "questions": redact_any(questions)},
         timeout=timeout if timeout is not None else TIMEOUT_SEC,
     )
     if resp.status_code >= 400:

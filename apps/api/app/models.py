@@ -26,6 +26,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -111,6 +112,10 @@ class Draft(Base):
     # pairs only, not full tool-call traces) — kept for audit/debugging of
     # "why these documents," not read back into any prompt after generation.
     intake_transcript: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSON)
+    # Marked confidential at creation: no AI help, and nothing from this
+    # draft is ever sent to an outside service (see ai_guard). Set once by
+    # the maker; there is deliberately no way to switch it off afterwards.
+    ai_restricted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False

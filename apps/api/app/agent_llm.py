@@ -30,6 +30,8 @@ from typing import Any, Callable, Iterator
 
 import httpx
 
+from .ai_guard import redact
+
 log = logging.getLogger("cfc.agent.llm")
 
 MUTATION_TOOLS = {"cfc_propose_insert", "cfc_propose_replace"}
@@ -412,7 +414,19 @@ def _stream_anthropic(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, A
     ]
     raw_content = [b.model_dump(mode="json", exclude_none=True) for b in final.content]
     finish_reason = "tool_calls" if tool_calls else (final.stop_reason or "stop")
-    yield {"kind": "final", "tool_calls": tool_calls, "finish_reason": finish_reason, "raw_content": raw_content}
+    yield {
+        "kind": "final",
+        "tool_calls": tool_calls,
+        "finish_reason": finish_reason,
+        "raw_content": raw_content,
+        "usage": {
+            "model": getattr(final, "model", model),
+            "input_tokens": getattr(usage, "input_tokens", 0) or 0,
+            "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+            "cache_read_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+            "cache_write_tokens": getattr(usage, "cache_creation_input_tokens", 0) or 0,
+        },
+    }
 
 
 def _stream_mock(cfg: LLMConfig, turns: list[Turn], tools: list[dict[str, Any]]) -> Iterator[dict[str, Any]]:
@@ -573,9 +587,10 @@ def run_agent(
         yield error_frame("config")
         return
 
+    # Personal details never reach the provider (ai_guard; CERT-In: anonymise inputs).
     turns: list[Turn] = [
         Turn(role="system", content=system_prompt),
-        Turn(role="user", content=user_prompt),
+        Turn(role="user", content=redact(user_prompt)),
     ]
 
     for step in range(MAX_STEPS):
@@ -592,6 +607,9 @@ def run_agent(
                     tool_calls = frame.get("tool_calls") or []
                     finish_reason = frame.get("finish_reason") or "stop"
                     raw_content = frame.get("raw_content")
+                    if frame.get("usage"):
+                        # Internal: main.py records it in the audit log and never streams it.
+                        yield {"type": "usage", "provider": provider, **frame["usage"]}
         except Exception as e:  # noqa: BLE001
             log.exception("provider stream failed (provider=%s)", provider)
             code, message = classify_error(e)
@@ -634,7 +652,7 @@ def run_agent(
                     role="tool",
                     tool_call_id=tc["id"],
                     name=tc["name"],
-                    content=json.dumps(result, default=str),
+                    content=redact(json.dumps(result, default=str)),
                 )
             )
 

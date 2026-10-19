@@ -386,7 +386,7 @@ export function DocumentStudio({
   const handleAutoRunConsumed = useCallback(() => setPendingGeneration(null), []);
   const handleThreadsChanged = useCallback(() => setThreadsRefreshKey((k) => k + 1), []);
 
-  async function onCreate(title: string, brief: string, template: TemplateChoice) {
+  async function onCreate(title: string, brief: string, template: TemplateChoice, confidential: boolean) {
     setBusy(true);
     setError(null);
     try {
@@ -394,9 +394,12 @@ export function DocumentStudio({
         persona,
         title,
         template.source === "catalog" ? template.templateCode : "BLANK",
-        template.source === "corpus_doc"
-          ? { templateSource: "corpus_doc", corpusDocId: template.corpusDocId }
-          : { templateSource: "catalog" },
+        {
+          ...(template.source === "corpus_doc"
+            ? { templateSource: "corpus_doc" as const, corpusDocId: template.corpusDocId }
+            : { templateSource: "catalog" as const }),
+          aiRestricted: confidential,
+        },
       );
       setNewDraftOpen(false);
       await loadDraft(res.draft.id, persona);
@@ -633,6 +636,14 @@ export function DocumentStudio({
                     {documentTitle(draftMeta)}
                   </h1>
                   {session && <StatusPill status={session.status} />}
+                  {draftMeta?.ai_restricted && (
+                    <span
+                      title="Nothing in this document is sent to outside AI services"
+                      className="shrink-0 rounded-full border border-border-strong px-2 py-0.5 text-xs font-medium text-text-muted"
+                    >
+                      Confidential · no AI
+                    </span>
+                  )}
                 </div>
                 <p className="truncate text-[13px] text-text-muted" aria-live="polite">
                   {statusLine}
@@ -929,26 +940,37 @@ export function DocumentStudio({
                 </div>
               }
               generate={
-                <AgentPanel
-                  key={draftId}
-                  draftId={draftId}
-                  persona={persona}
-                  superdocRole={session?.superdoc_role}
-                  canRunAgent={Boolean(session?.can_run_agent_mutate)}
-                  choice={llmChoice}
-                  onChoiceChange={setLlmChoice}
-                  serverLlm={me?.server_llm}
-                  isAdmin={isAdmin}
-                  onDraftUpdated={handleAgentDraftUpdated}
-                  onThreadsChanged={handleThreadsChanged}
-                  onStreamingChange={handleStreamingChange}
-                  autoRun={pendingGeneration}
-                  onAutoRunConsumed={handleAutoRunConsumed}
-                />
+                draftMeta?.ai_restricted ? (
+                  <div className="m-3 rounded-lg border border-border bg-surface-sunken p-4 text-sm text-text">
+                    <p className="font-medium">AI help is off for this document</p>
+                    <p className="mt-1 text-text-muted">
+                      It was marked confidential when it was created, so nothing in it is sent to outside AI
+                      services. Writing, comments, review and approval all work as usual.
+                    </p>
+                  </div>
+                ) : (
+                  <AgentPanel
+                    key={draftId}
+                    draftId={draftId}
+                    persona={persona}
+                    superdocRole={session?.superdoc_role}
+                    canRunAgent={Boolean(session?.can_run_agent_mutate)}
+                    choice={llmChoice}
+                    onChoiceChange={setLlmChoice}
+                    serverLlm={me?.server_llm}
+                    isAdmin={isAdmin}
+                    onDraftUpdated={handleAgentDraftUpdated}
+                    onThreadsChanged={handleThreadsChanged}
+                    onStreamingChange={handleStreamingChange}
+                    autoRun={pendingGeneration}
+                    onAutoRunConsumed={handleAutoRunConsumed}
+                  />
+                )
               }
               research={
                 <RagPanel
                   persona={persona}
+                  draftId={draftId}
                   canInsert={Boolean(session?.can_save && ready)}
                   onInsertCitation={insertCitationIntoDraft}
                 />
