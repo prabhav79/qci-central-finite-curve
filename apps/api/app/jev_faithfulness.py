@@ -74,6 +74,21 @@ def _norm(text: str) -> str:
     return re.sub(r"is(ations?|e|ed|es|ing)\b", r"iz\1", text)
 
 
+_INDIAN_UNIT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|crores?|cr)\b", re.I)
+_BIG_NUMBER_RE = re.compile(r"\b\d{6,}\b")
+
+
+def _number_forms(evidence_norm: str) -> str:
+    """Written-out forms of the evidence's amounts, so "Rs 18 lakh" supports
+    "Rs 18,00,000" and "1,20,00,000" supports "Rs 1.2 crore"."""
+    forms = []
+    for value, unit in _INDIAN_UNIT_RE.findall(evidence_norm):
+        forms.append(str(round(float(value) * (10**7 if unit.lower().startswith("cr") else 10**5))))
+    for n in _BIG_NUMBER_RE.findall(evidence_norm):
+        forms += [f"{int(n) / 10**5:g}", f"{int(n) / 10**7:g}"]
+    return " ".join(forms)
+
+
 def _fact_tokens(sentence: str) -> list[tuple[str, str]]:
     """(kind, token) for the numbers, acronyms and capitalised names in a
     sentence. A lone capitalised word that only starts the sentence (or
@@ -137,7 +152,7 @@ def _candidate_claims(section_text: str) -> list[str]:
     Headings, list-number fragments ("Objectives 1.", "2.") and notes to
     the maker aren't claims. A table row is checked as text, each cell
     starting like a sentence."""
-    body = _LIST_MARKER_RE.sub("", _HEADING_LINE_RE.sub("", section_text))
+    body = _LIST_MARKER_RE.sub("", _HEADING_LINE_RE.sub("", section_text)).replace("**", "")
     body = _ROW_SERIAL_RE.sub("|", body).replace("|", " : ")
     sentences = [" ".join(s.split()).strip("*_ ") for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
     claims = []
@@ -173,6 +188,7 @@ def check_section(section_text: str, evidence: str) -> list[dict[str, object]]:
     if not evidence.strip() or not jev_client.is_configured():
         return []
     evidence_norm = _norm(f"{_AUTHOR}\n{evidence}")
+    evidence_norm = f"{evidence_norm} {_number_forms(evidence_norm)}"
     initials =_initials(f"{evidence}\n{section_text}")
     claims: list[str] = []
     for c in _candidate_claims(section_text):
