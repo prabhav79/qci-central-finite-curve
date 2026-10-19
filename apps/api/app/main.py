@@ -2105,10 +2105,12 @@ def agent_chat(
                             if frame.get("name") == "cfc_search_corpus":
                                 for hit in result.get("hits") or []:
                                     if hit.get("text"):
-                                        section_evidence_parts.append(str(hit["text"]))
+                                        section_evidence_parts.append(f"{hit.get('title', '')}: {hit['text']}")
                             elif frame.get("name") == "cfc_get_document":
                                 if result.get("full_text"):
-                                    section_evidence_parts.append(str(result["full_text"])[:4000])
+                                    section_evidence_parts.append(
+                                        f"{result.get('title', '')}: {str(result['full_text'])[:4000]}"
+                                    )
                         yield _sse(frame)
                     if not section_error and not section_written:
                         section_error = "This section couldn't be written. Try generating again."
@@ -2119,8 +2121,13 @@ def agent_chat(
                         if section_generated_text and section_evidence_parts:
                             # The user's own brief and clarification answers are ground
                             # truth too — without them every client fact gets flagged.
+                            precedent_titles = "; ".join(d["title"] for d in key_docs or [])
                             evidence = "\n\n".join(
-                                [f"Brief and answers from the user (treat as true):\n{body.prompt}", *section_evidence_parts]
+                                [
+                                    "Brief and answers from the user (treat as true):\n"
+                                    f"{draft.title}\n{body.prompt}\nChosen precedents: {precedent_titles}",
+                                    *section_evidence_parts,
+                                ]
                             )
                             flags = jev_faithfulness.check_section(section_generated_text, evidence)
                             if flags:

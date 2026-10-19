@@ -270,6 +270,48 @@ _MD_EMPHASIS_RE = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*")
 _MD_HEADING_RE = re.compile(r"^(#{1,3})\s+(.*)$")
 _MD_BULLET_RE = re.compile(r"^[-*]\s+(.*)$")
 _MD_NUMBERED_RE = re.compile(r"^\d+\.\s+(.*)$")
+_MD_NUMBERED_ITEM_RE = re.compile(r"^(\d{1,2})[.)]\s+(.*)$")
+
+
+def _keep_list_numbers(text: str) -> str:
+    """SuperDoc's markdown import restarts an ordered list whenever other
+    lines sit between its items, so "1. Primary research / - bullet /
+    2. Secondary research" renders as 1., 1., 1. Such a list is really a
+    set of numbered group headings, so its items become bold lead-ins
+    ("**2. Secondary research**") that keep the author's numbers. Tight
+    lists (items on consecutive lines) stay real DOCX lists."""
+    lines = text.split("\n")
+    sequences: list[list[int]] = []
+    interrupted: list[bool] = []
+    gap = False  # non-list content since the current sequence's last item
+    for i, raw in enumerate(lines):
+        line = raw.strip()
+        item = _MD_NUMBERED_ITEM_RE.match(line)
+        if item:
+            if int(item.group(1)) == 1 or not sequences:
+                sequences.append([i])
+                interrupted.append(False)
+            else:
+                sequences[-1].append(i)
+                interrupted[-1] = interrupted[-1] or gap
+            gap = False
+        elif _MD_HEADING_RE.match(line):
+            sequences.append([])
+            interrupted.append(False)
+            gap = False
+        elif line:
+            gap = True
+    for seq, broken in zip(sequences, interrupted):
+        if not broken:
+            continue
+        for i in seq:
+            num, body = _MD_NUMBERED_ITEM_RE.match(lines[i].strip()).groups()  # type: ignore[union-attr]
+            plain = body.replace("**", "").strip()
+            lead = f"**{num}. {plain}**" if len(plain.split()) <= 12 else f"**{num}.** {body}"
+            # Directly under a bullet, a plain line is a lazy continuation of
+            # that bullet in markdown — a blank line keeps it a paragraph.
+            lines[i] = f"\n{lead}" if i and lines[i - 1].strip() else lead
+    return "\n".join(lines)
 
 
 def _add_markdown_runs(paragraph: Any, text: str) -> None:
@@ -530,6 +572,7 @@ def cfc_propose_insert(
 ) -> dict[str, Any]:
     if not text or not text.strip():
         raise ToolError("insert text is empty")
+    text = _keep_list_numbers(text)
     payload_text = text if not citation else f"{text}\n\n*(Source: {_citation_label(ctx, citation)})*"
     if position == "after_match":
         if not anchor or not anchor.strip():

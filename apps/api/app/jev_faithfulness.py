@@ -34,9 +34,9 @@ from . import jev_client
 
 log = logging.getLogger("cfc.jev.faithfulness")
 
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-_HAS_DIGIT_RE = re.compile(r"\d")
-_PROPER_NOUN_RE = re.compile(r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+\b")
+# Lines are units too: a bold deliverable name on its own line is not the
+# start of the description sentence below it.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 
 _MAX_CLAIMS_PER_SECTION = 8
 _MAX_FLAGS_PER_SECTION = 3
@@ -45,27 +45,83 @@ _EVIDENCE_CHAR_LIMIT = 8000
 _MIN_CLAIM_WORDS = 6
 _HEADING_LINE_RE = re.compile(r"^\s*#{1,6}\s+[^\n]*\n?", re.M)
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+", re.M)
+_LEAD_LABEL_RE = re.compile(r"^[A-Z][A-Z &/,-]+:\s*")  # "DATA ACCESS AND COOPERATION: "
+
+# The fact tokens a hallucination would invent: numbers, acronyms, names.
+_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
+_ACRONYM_RE = re.compile(r"\b([A-Z][A-Z&]*[A-Z])s?\b")
+# "and" is not a name connector: "Field Supervisors and Enumerators" is two
+# names, checked separately.
+_NAME_RE = re.compile(r"\b[A-Z][a-z]+(?:(?:\s+(?:of|for|the)\s+|\s+)[A-Z][a-z]+)*")
+_DETERMINERS = {"The", "This", "These", "That", "Those", "A", "An", "Each", "Our", "Its", "Their", "All", "Any"}
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"(?<=\d),(?=\d)", "", " ".join(text.lower().split()))
+
+
+def _fact_tokens(sentence: str) -> list[str]:
+    """Numbers, acronyms and capitalised names in a sentence. A lone
+    capitalised word that only starts the sentence (or follows a colon)
+    is grammar, not a name, and is skipped."""
+    tokens = [n.replace(",", "") for n in _NUMBER_RE.findall(sentence)]
+    tokens += [a for part in _ACRONYM_RE.findall(sentence) for a in part.split("&") if len(a) >= 2]
+    for m in _NAME_RE.finditer(sentence):
+        words = m.group(0).split()
+        while words and words[0] in _DETERMINERS:
+            words = words[1:]
+        if not words:
+            continue
+        sentence_initial = m.start() == 0 or sentence[: m.start()].rstrip().endswith((":", "("))
+        if len(words) == 1 and sentence_initial:
+            continue
+        tokens.append(" ".join(words))
+    return tokens
+
+
+def _in_evidence(token: str, evidence_norm: str) -> bool:
+    tok = _norm(token)
+    variants = {tok, tok[:-1]} if tok.endswith("s") and len(tok) > 3 else {tok, tok + "s"}
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(v)}(?![a-z0-9])", evidence_norm) for v in variants)
 
 
 def _candidate_claims(section_text: str) -> list[str]:
-    """Sentences worth checking: contain a digit (a number/date/amount) or
-    a multi-word capitalized phrase (a likely proper noun) — the exact
-    failure shape 2a's fix targets ("Special Campaign 2.0 & 3.0").
+    """Sentences worth checking: ones carrying a number, acronym or name —
+    the exact failure shape 2a's fix targets ("Special Campaign 2.0 & 3.0").
     Headings and list-number fragments ("Objectives 1.", "2.") aren't claims."""
     body = _LIST_MARKER_RE.sub("", _HEADING_LINE_RE.sub("", section_text))
     sentences = [" ".join(s.split()) for s in _SENTENCE_SPLIT_RE.split(body) if s.strip()]
-    sentences = [s.strip("*_ ") for s in sentences if len(s.split()) >= _MIN_CLAIM_WORDS]
-    claims = [s for s in sentences if _HAS_DIGIT_RE.search(s) or _PROPER_NOUN_RE.search(s)]
-    return claims[:_MAX_CLAIMS_PER_SECTION]
+    sentences = [_LEAD_LABEL_RE.sub("", s.strip("*_ ")) for s in sentences]
+    return [
+        s for s in sentences
+        if len(s.split()) >= _MIN_CLAIM_WORDS and not _is_title_line(s) and _fact_tokens(s)
+    ]
+
+
+def _is_title_line(line: str) -> bool:
+    """"Field Survey and Mid-Term Progress Report" — a list heading, not a claim."""
+    words = [w for w in line.split() if w[0].isalpha()]
+    return bool(words) and line[-1] not in ".!?" and sum(w[0].isupper() for w in words) >= 0.6 * len(words)
 
 
 def check_section(section_text: str, evidence: str) -> list[dict[str, object]]:
     """Returns only the claims that scored BELOW the support threshold —
     i.e. the flags actually worth surfacing, never the full claim list.
-    Each item: {"claim": str, "score": float}."""
+    Each item: {"claim": str, "score": float}.
+
+    Two stages: a sentence whose every number, acronym and name appears in
+    the evidence (brief, answers, retrieved sources) is supported outright —
+    Jev scores proposal language ("QCI will deliver…") as unsupported even
+    when every fact in it came from the brief. Only sentences carrying a
+    fact found nowhere in the evidence go to Jev, which then forgives
+    paraphrase ("eight months" for "8 months")."""
     if not evidence.strip() or not jev_client.is_configured():
         return []
-    claims = _candidate_claims(section_text)
+    evidence_norm = _norm(evidence)
+    claims = [
+        c for c in _candidate_claims(section_text)
+        if not all(_in_evidence(t, evidence_norm) for t in _fact_tokens(c))
+    ][:_MAX_CLAIMS_PER_SECTION]
     if not claims:
         return []
 
@@ -76,7 +132,9 @@ def check_section(section_text: str, evidence: str) -> list[dict[str, object]]:
                 "Does the reference material given as state support or contain "
                 f'evidence for this specific claim: "{claim}"? Answer low if the '
                 "claim's specific numbers, dates, or proper nouns are not present "
-                "in the reference material, even if the general topic matches."
+                "in the reference material, even if the general topic matches. "
+                "A statement of what QCI proposes or will do counts as supported "
+                "when its numbers, dates and names appear in the reference material."
             ),
         }
         for i, claim in enumerate(claims)
