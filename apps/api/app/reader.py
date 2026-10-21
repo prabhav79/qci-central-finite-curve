@@ -96,7 +96,7 @@ def _converted_pdf(doc: CorpusDocument, original: Path) -> Path:
             shutil.copyfile(original, src)
             try:
                 subprocess.run(
-                    [soffice, "--headless", "--norestore", f"-env:UserInstallation=file:///{Path(tmp).as_posix()}/lo",
+                    [soffice, "--headless", "--norestore", f"-env:UserInstallation={(Path(tmp) / 'lo').as_uri()}",
                      "--convert-to", "pdf", "--outdir", tmp, str(src)],
                     check=True, capture_output=True, timeout=_CONVERT_TIMEOUT_SEC,
                 )
