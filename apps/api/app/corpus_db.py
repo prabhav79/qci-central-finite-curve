@@ -347,14 +347,16 @@ def _query_vector(query: str) -> list[float]:
     return embed_one(query)
 
 
-def _candidates_postgres(s: Session, qvec: list[float], user: User | None, ministry: str | None) -> list[tuple[CorpusChunk, float]]:
+def _candidates_postgres(
+    s: Session, qvec: list[float], user: User | None, ministry: str | None, k: int = _CANDIDATES
+) -> list[tuple[CorpusChunk, float]]:
     stmt = (
         select(CorpusChunk, CorpusChunk.embedding.cosine_distance(qvec).label("distance"))
         .join(CorpusDocument, CorpusChunk.document_id == CorpusDocument.id)
         .options(selectinload(CorpusChunk.document))
         .where(or_(CorpusChunk.section_label.is_(None), CorpusChunk.section_label != _BOILERPLATE))
         .order_by("distance")
-        .limit(_CANDIDATES)
+        .limit(k)
     )
     stmt = _apply_acl(stmt, user)
     if ministry:
@@ -362,7 +364,9 @@ def _candidates_postgres(s: Session, qvec: list[float], user: User | None, minis
     return [(chunk, 1.0 - float(distance)) for chunk, distance in s.execute(stmt).all()]
 
 
-def _candidates_python(s: Session, qvec: list[float], user: User | None, ministry: str | None) -> list[tuple[CorpusChunk, float]]:
+def _candidates_python(
+    s: Session, qvec: list[float], user: User | None, ministry: str | None, k: int = _CANDIDATES
+) -> list[tuple[CorpusChunk, float]]:
     import numpy as np  # noqa: PLC0415 — fastembed dependency; dev/SQLite path only
 
     stmt = (
@@ -387,7 +391,7 @@ def _candidates_python(s: Session, qvec: list[float], user: User | None, ministr
     q = np.asarray(qvec, dtype=np.float32)
     denom = np.linalg.norm(mat, axis=1) * (np.linalg.norm(q) or 1.0)
     sims = (mat @ q) / np.where(denom == 0, 1.0, denom)
-    top = np.argsort(-sims)[:_CANDIDATES]
+    top = np.argsort(-sims)[:k]
     return [(chunks[i], float(sims[i])) for i in top]
 
 
@@ -491,6 +495,32 @@ def db_search(
             entries = kept
     final = _cap_per_doc(entries, _MAX_PER_DOC_FINAL, key=lambda e: e[1].document.doc_id)[:limit]
     return [_chunk_to_hit(chunk, score, rel) for score, chunk, rel in final]
+
+
+_LIBRARY_CANDIDATES = 240
+_LIBRARY_FLOOR = 0.35
+
+
+def db_search_documents(s: Session, query: str, *, user: User | None = None) -> dict[str, dict[str, Any]]:
+    """Library search: which documents match, by their best passage.
+
+    Same hybrid scoring as db_search over a wider pool, with no Jev call, so
+    browsing stays instant. Returns {doc_id: {score, snippet, section}} for
+    documents scoring at least _LIBRARY_FLOOR (0..1, best passage)."""
+    q = (query or "").strip()
+    if not q:
+        return {}
+    qvec = _query_vector(q)
+    candidates = (_candidates_postgres if IS_POSTGRES else _candidates_python)(
+        s, qvec, user, None, _LIBRARY_CANDIDATES
+    )
+    best: dict[str, dict[str, Any]] = {}
+    for score, chunk in _hybrid_rank(q, candidates, _section_hint(q), None):
+        doc_id = chunk.document.doc_id
+        if doc_id in best or score < _LIBRARY_FLOOR:
+            continue
+        best[doc_id] = {"score": round(score, 4), "snippet": chunk.text or "", "section": chunk.section_label}
+    return best
 
 
 # --------------------------------------------------------------------------- #

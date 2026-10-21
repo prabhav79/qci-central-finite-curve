@@ -455,6 +455,12 @@ export function KnowledgeGraph() {
           {preview.status === "ready" && preview.data.kind === "corpus_document" && (
             <div className="space-y-2">
               <div className="text-sm font-semibold text-text">{preview.data.title}</div>
+              <Link
+                href={`/studio/reader?doc=${encodeURIComponent(preview.data.doc_id)}`}
+                className="inline-block rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white transition-colors hover:bg-accent-hover"
+              >
+                Open in Reader
+              </Link>
               <div className="text-[13px] text-text-muted">
                 {preview.data.ministry}
                 {preview.data.date ? ` · ${formatDateIST(preview.data.date)}` : ""}

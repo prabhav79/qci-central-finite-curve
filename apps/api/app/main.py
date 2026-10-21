@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -28,10 +29,10 @@ from urllib import request as urlrequest
 from urllib.error import HTTPError, URLError
 
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -61,8 +62,11 @@ from .agent_tools import (
     REVIEWER_TOOL_SCHEMAS,
     TOOL_SCHEMAS,
     AgentContext,
+    ToolError,
+    _dispatch_mutate as agent_mutate,
     dispatch as agent_dispatch,
 )
+from . import corpus_meta, reader
 from .corpus import corpus_stats as inmem_stats, get_document as inmem_get, list_documents as inmem_list, reload_corpus, search_corpus as inmem_search
 from .corpus_db import (
     db_document_outline,
@@ -70,12 +74,13 @@ from .corpus_db import (
     db_has_corpus,
     db_list_documents,
     db_search,
+    db_search_documents,
     db_stats,
     graph_children,
     recompute_all_edges,
 )
 from .db import ROOT, SessionLocal, ensure_pgvector, get_session
-from .models import AuditLog, CorpusDocument, Division, Draft, DraftApproval, DraftVersion, Thread, User
+from .models import AuditLog, CorpusDocument, Division, Draft, DraftApproval, DraftVersion, ReaderHighlight, Thread, User
 from .rag import answer_query
 from .seed import seed_divisions_and_users
 from .storage import Bucket, default_bucket
@@ -164,6 +169,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # PDF.js reads these to load a large PDF a page range at a time.
+    expose_headers=["Accept-Ranges", "Content-Range", "Content-Length"],
 )
 
 
@@ -205,6 +212,11 @@ def _startup() -> None:
         log.info("cfc seed: %s", counts)
     except Exception:  # noqa: BLE001
         log.exception("cfc seed failed")
+    try:
+        with SessionLocal() as meta_s:
+            log.info("cfc library metadata: %s field(s) updated", corpus_meta.backfill(meta_s))
+    except Exception:  # noqa: BLE001
+        log.exception("cfc library metadata backfill failed")
 
     def _warm_embeddings() -> None:
         try:
@@ -251,6 +263,9 @@ class CreateDraftBody(BaseModel):
     maker_employee_id: str | None = None
     # Confidential: no AI help, nothing sent to outside services (ai_guard).
     ai_restricted: bool = False
+    # Reader highlights (the caller's own) this draft starts from: their
+    # documents become pinned precedents, their text reference excerpts.
+    reference_highlight_ids: list[int] = []
 
 
 class DecideBody(BaseModel):
@@ -875,6 +890,9 @@ def create_draft(
         generation_outline=[list(pair) for pair in outline] if outline else None,
         ai_restricted=body.ai_restricted,
     )
+    if body.reference_highlight_ids:
+        draft.reference_excerpts = _reference_excerpts(s, user, body.reference_highlight_ids)
+        draft.key_doc_ids = list(dict.fromkeys(e["doc_id"] for e in draft.reference_excerpts)) or None
     s.add(draft)
     s.add(
         DraftVersion(
@@ -2199,12 +2217,13 @@ def agent_chat(
                     # written to the draft itself.
                     section_generated_text = ""
                     section_evidence_parts: list[str] = []
+                    section_sources: list[dict[str, str]] = []
                     for frame in _audited_ai(
                         run_agent_with_fallback(
                             configs=configs,
                             system_prompt=draft_generator_system(section_title, section_label),
                             user_prompt=draft_generator_user(
-                                body.prompt, section_label, section_title, template_code, key_docs
+                                body.prompt + _reference_block(draft), section_label, section_title, template_code, key_docs
                             ),
                             tool_schemas=TOOL_SCHEMAS,
                             tool_dispatch=dispatch,
@@ -2231,11 +2250,23 @@ def agent_chat(
                                 for hit in result.get("hits") or []:
                                     if hit.get("text"):
                                         section_evidence_parts.append(f"{hit.get('title', '')}: {hit['text']}")
+                                        if hit.get("doc_id"):
+                                            section_sources.append(
+                                                {"doc_id": hit["doc_id"], "title": hit.get("title", ""), "text": hit["text"]}
+                                            )
                             elif frame.get("name") == "cfc_get_document":
                                 if result.get("full_text"):
                                     section_evidence_parts.append(
                                         f"{result.get('title', '')}: {str(result['full_text'])[:4000]}"
                                     )
+                                    if result.get("doc_id"):
+                                        section_sources.append(
+                                            {
+                                                "doc_id": result["doc_id"],
+                                                "title": result.get("title", ""),
+                                                "text": str(result["full_text"])[:4000],
+                                            }
+                                        )
                         yield _sse(frame)
                     if not section_error and not section_written:
                         section_error = "This section couldn't be written. Try generating again."
@@ -2258,6 +2289,8 @@ def agent_chat(
                             )
                             flags = jev_faithfulness.check_section(section_generated_text, evidence)
                             if flags:
+                                for f in flags:
+                                    f["source"] = jev_faithfulness.closest_source(str(f.get("claim", "")), section_sources)
                                 yield _sse(
                                     {"type": "faithfulness_flag", "section": section_label, "flags": flags}
                                 )
@@ -2291,7 +2324,9 @@ def agent_chat(
                     run_agent_with_fallback(
                         configs=configs,
                         system_prompt=draft_intake_system(force_final=force_final),
-                        user_prompt=draft_intake_user(brief, transcript, turn_count, title=draft.title or "", gaps=gaps),
+                        user_prompt=draft_intake_user(
+                        brief + _reference_block(draft), transcript, turn_count, title=draft.title or "", gaps=gaps
+                    ),
                         tool_schemas=INTAKE_TOOL_SCHEMAS,
                         tool_dispatch=dispatch,
                     ),
@@ -2304,7 +2339,9 @@ def agent_chat(
                         # Persist so the (separate) draft_generator request can
                         # read it without the frontend resending it 7 times.
                         fresh = _load_draft(s, draft_id)
-                        fresh.key_doc_ids = [d["doc_id"] for d in (frame.get("key_docs") or [])]
+                        chosen = [d["doc_id"] for d in (frame.get("key_docs") or [])]
+                        pinned = [e["doc_id"] for e in (fresh.reference_excerpts or [])]
+                        fresh.key_doc_ids = list(dict.fromkeys(pinned + chosen))
                         fresh.intake_transcript = transcript
                         s.commit()
                     yield _sse(frame)
@@ -2546,6 +2583,519 @@ def corpus_flagged(
             }
             for d in rows
         ],
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Reader: original documents, private highlights, excerpts into drafts
+# --------------------------------------------------------------------------- #
+
+_OUTCOME_LABELS = {"successful": "Won", "unsuccessful": "Not won", "pending": "Pending"}
+
+
+def _visible_document(s: Session, user: User, doc_id: str) -> CorpusDocument:
+    stmt = select(CorpusDocument).where(CorpusDocument.doc_id == doc_id)
+    if not reads_all_boards(user):
+        stmt = stmt.where(CorpusDocument.division_code == user.division_code)
+    doc = s.execute(stmt).scalar_one_or_none()
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return doc
+
+
+def _doc_summary(d: CorpusDocument) -> dict[str, Any]:
+    return {
+        "doc_id": d.doc_id,
+        "title": d.title,
+        "client": d.client or d.ministry,
+        "ministry": d.ministry,
+        "state": d.state,
+        "sector": d.sector,
+        "work_type": d.work_type,
+        "engagement": d.engagement,
+        "doc_type": d.doc_type,
+        "date": d.date,
+        "value_inr": d.value_inr or None,
+        "outcome": d.outcome or "unknown",
+        "outcome_label": _OUTCOME_LABELS.get(d.outcome or ""),
+    }
+
+
+def _highlight_dict(h: ReaderHighlight, title: str | None = None) -> dict[str, Any]:
+    return {
+        "id": h.id,
+        "doc_id": h.doc_id,
+        "doc_title": title,
+        "page": h.page,
+        "rects": h.rects,
+        "quote": h.quote,
+        "note": h.note,
+        "created_at": _iso(h.created_at),
+    }
+
+
+def _reference_excerpts(s: Session, user: User, highlight_ids: list[int]) -> list[dict[str, Any]]:
+    """The caller's own highlights, in the order given, as draft reference excerpts."""
+    rows = s.execute(
+        select(ReaderHighlight).where(
+            ReaderHighlight.id.in_(highlight_ids[:50]), ReaderHighlight.employee_id == user.employee_id
+        )
+    ).scalars().all()
+    by_id = {h.id: h for h in rows}
+    titles = {
+        d.doc_id: d.title
+        for d in s.execute(
+            select(CorpusDocument).where(CorpusDocument.doc_id.in_({h.doc_id for h in rows}))
+        ).scalars().all()
+    }
+    return [
+        {"doc_id": h.doc_id, "title": titles.get(h.doc_id, h.doc_id), "page": h.page, "quote": h.quote[:2000]}
+        for h in (by_id.get(i) for i in highlight_ids)
+        if h is not None
+    ]
+
+
+def _reference_block(draft: Draft) -> str:
+    """Excerpts the maker chose in the Reader, appended to the model's brief."""
+    excerpts = draft.reference_excerpts or []
+    if not excerpts:
+        return ""
+    lines = [
+        "",
+        "",
+        "Reference excerpts the author highlighted in past QCI documents (treat as accurate; "
+        "cite them as (Source: title, p. N) where you use them):",
+    ]
+    for e in excerpts:
+        quote = " ".join(str(e.get("quote", "")).split())
+        lines.append(f"- “{quote}” ({e.get('title')}, p. {e.get('page')})")
+    return "\n".join(lines)
+
+
+class HighlightRectBody(BaseModel):
+    page: int
+    x: float
+    y: float
+    w: float
+    h: float
+
+
+class HighlightBody(BaseModel):
+    doc_id: str
+    page: int
+    rects: list[HighlightRectBody]
+    quote: str
+    note: str | None = None
+
+
+class HighlightNoteBody(BaseModel):
+    note: str | None = None
+
+
+class ExcerptBody(BaseModel):
+    highlight_id: int | None = None
+    highlight_ids: list[int] = Field(default_factory=list, max_length=20)
+
+
+@app.get("/reader/documents/{doc_id}")
+def reader_document(
+    doc_id: str,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """A document's details for the Reader: what it is, the rest of its
+    engagement series (by date), and the documents most similar to it."""
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    doc = _visible_document(s, user, doc_id)
+    series: list[dict[str, Any]] = []
+    if doc.engagement:
+        stmt = select(CorpusDocument).where(CorpusDocument.engagement == doc.engagement)
+        if not reads_all_boards(user):
+            stmt = stmt.where(CorpusDocument.division_code == user.division_code)
+        series = sorted((_doc_summary(d) for d in s.execute(stmt).scalars().all()), key=lambda d: d["date"] or "")
+    in_series = {d["doc_id"] for d in series}
+    similar_ids = [n["doc_id"] for n in graph_children(s, f"doc:{doc_id}", user=user) if n.get("doc_id")]
+    similar_ids = [i for i in similar_ids if i not in in_series][:6]
+    similar_docs = {
+        d.doc_id: d
+        for d in s.execute(select(CorpusDocument).where(CorpusDocument.doc_id.in_(similar_ids))).scalars().all()
+    }
+    return {
+        "document": _doc_summary(doc),
+        "file_url": f"/reader/documents/{doc_id}/file",
+        "series": series if len(series) > 1 else [],
+        "similar": [_doc_summary(similar_docs[i]) for i in similar_ids if i in similar_docs],
+    }
+
+
+@app.get("/reader/documents/{doc_id}/file")
+def reader_document_file(
+    doc_id: str,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> FileResponse:
+    """The document as a PDF (the original, or a PDF copy of a Word file).
+    Range requests are honoured, so large PDFs open a page at a time."""
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    doc = _visible_document(s, user, doc_id)
+    try:
+        path = reader.viewable_pdf(doc)
+    except reader.NotAvailable as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    safe_title = re.sub(r'[\\/:*?"<>|]+', " ", doc.title or doc_id).strip()[:150] or "document"
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=f"{safe_title}.pdf",
+        content_disposition_type="inline",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@app.get("/reader/highlights")
+def reader_highlights(
+    doc_id: str | None = None,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """The caller's own highlights: for one document, or all of them (newest first)."""
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    stmt = select(ReaderHighlight).where(ReaderHighlight.employee_id == user.employee_id)
+    if doc_id:
+        _visible_document(s, user, doc_id)
+        stmt = stmt.where(ReaderHighlight.doc_id == doc_id).order_by(ReaderHighlight.page, ReaderHighlight.id)
+    else:
+        stmt = stmt.order_by(ReaderHighlight.created_at.desc()).limit(200)
+    rows = s.execute(stmt).scalars().all()
+    titles = {
+        d.doc_id: d.title
+        for d in s.execute(
+            select(CorpusDocument).where(CorpusDocument.doc_id.in_({h.doc_id for h in rows}))
+        ).scalars().all()
+    }
+    return {"items": [_highlight_dict(h, titles.get(h.doc_id)) for h in rows]}
+
+
+@app.post("/reader/highlights")
+def reader_add_highlight(
+    body: HighlightBody,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    doc = _visible_document(s, user, body.doc_id)
+    quote = " ".join(body.quote.split())
+    if not quote or not body.rects:
+        raise HTTPException(status_code=400, detail="Select some text to highlight.")
+    if len(quote) > 8000 or len(body.rects) > 500:
+        raise HTTPException(status_code=400, detail="That selection is too long to save as one highlight.")
+    rects = []
+    for r in body.rects:
+        # Intersect with the page (0..1 on both axes); drop what falls outside it.
+        x0, y0 = max(r.x, 0.0), max(r.y, 0.0)
+        x1, y1 = min(r.x + r.w, 1.0), min(r.y + r.h, 1.0)
+        if x1 > x0 and y1 > y0 and r.page >= 1:
+            rects.append({"page": int(r.page), **{k: round(v, 5) for k, v in zip("xywh", (x0, y0, x1 - x0, y1 - y0))}})
+    if not rects:
+        raise HTTPException(status_code=400, detail="Select some text to highlight.")
+    h = ReaderHighlight(
+        employee_id=user.employee_id,
+        doc_id=doc.doc_id,
+        page=body.page,
+        rects=rects,
+        quote=quote,
+        note=(body.note or "").strip() or None,
+    )
+    s.add(h)
+    s.commit()
+    s.refresh(h)
+    return _highlight_dict(h, doc.title)
+
+
+def _own_highlight(s: Session, user: User, highlight_id: int) -> ReaderHighlight:
+    h = s.get(ReaderHighlight, highlight_id)
+    if h is None or h.employee_id != user.employee_id:
+        raise HTTPException(status_code=404, detail="Highlight not found")
+    return h
+
+
+@app.patch("/reader/highlights/{highlight_id}")
+def reader_note_highlight(
+    highlight_id: int,
+    body: HighlightNoteBody,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    h = _own_highlight(s, user, highlight_id)
+    h.note = (body.note or "").strip()[:2000] or None
+    s.commit()
+    return _highlight_dict(h)
+
+
+@app.delete("/reader/highlights/{highlight_id}")
+def reader_delete_highlight(
+    highlight_id: int,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    s.delete(_own_highlight(s, user, highlight_id))
+    s.commit()
+    return {"ok": True}
+
+
+@app.get("/reader/my-drafts")
+def reader_my_drafts(
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """The caller's drafts that an excerpt can be added to right now."""
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    drafts = s.execute(
+        select(Draft).where(Draft.maker_employee_id == user.employee_id).order_by(Draft.updated_at.desc()).limit(50)
+    ).scalars().all()
+    return {
+        "items": [
+            {"id": d.id, "title": d.title, "status": d.status, "updated_at": _iso(d.updated_at)}
+            for d in drafts
+            if _session_for(s, user, d).get("can_run_agent_mutate")
+        ]
+    }
+
+
+@app.post("/drafts/{draft_id}/excerpts")
+def draft_add_excerpt(
+    draft_id: str,
+    body: ExcerptBody,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Adds the caller's highlights to the end of a draft, each quoted with its
+    source and page, in one new version. No AI involved, so confidential
+    drafts accept it too."""
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    draft = _load_draft(s, draft_id)
+    flags = _session_for(s, user, draft)
+    if not _can_view_division(user, draft.division_code) or not flags.get("can_run_agent_mutate"):
+        raise HTTPException(status_code=403, detail="You can't add to this document right now.")
+    ids = list(dict.fromkeys(([body.highlight_id] if body.highlight_id else []) + body.highlight_ids))
+    if not ids:
+        raise HTTPException(status_code=422, detail="Choose a highlight to add.")
+    ops: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    for hid in ids:
+        h = _own_highlight(s, user, hid)
+        doc = _visible_document(s, user, h.doc_id)
+        ops.append({"kind": "insert_end", "text": f"“{h.quote}” *(Source: {doc.title}, p. {h.page})*"})
+        sources.append({"doc_id": doc.doc_id, "page": h.page})
+    try:
+        result = agent_mutate(
+            AgentContext(session=s, user=user, draft=draft, session_flags=flags),
+            ops,
+            trigger="reader_excerpt",
+        )
+    except ToolError as e:
+        raise HTTPException(status_code=502, detail="The excerpt couldn't be added. Please try again.") from e
+    _log_audit(
+        s,
+        actor=user,
+        action="draft.insert_excerpt",
+        target_kind="draft",
+        target_id=draft.id,
+        division_code=draft.division_code,
+        details={"excerpts": sources},
+    )
+    s.commit()
+    return {"ok": True, "version": result.get("version"), "draft": {"id": draft.id, "title": draft.title}}
+
+
+# --------------------------------------------------------------------------- #
+# Library: browse and search the corpus as documents, won work first
+# --------------------------------------------------------------------------- #
+
+_LIBRARY_FIELDS = ("client", "sector", "work_type", "doc_type", "state", "year", "outcome")
+_OUTCOME_FACET_LABELS = {**_OUTCOME_LABELS, "unknown": "Not recorded"}
+_GRID_ROWS = 14
+_GRID_COLS = 8
+
+
+def _library_value(d: CorpusDocument, field: str) -> str | None:
+    if field == "client":
+        return d.client or d.ministry
+    if field == "year":
+        m = re.match(r"(\d{4})", d.date or "")
+        return m.group(1) if m else None
+    if field == "outcome":
+        return d.outcome or "unknown"
+    return getattr(d, field)
+
+
+def _title_matches(q: str, docs: list[CorpusDocument]) -> set[str]:
+    """Documents whose title, client or engagement contains every query word."""
+    words = [w for w in re.findall(r"\w+", q.lower()) if len(w) > 2]
+    if not words:
+        return set()
+    out = set()
+    for d in docs:
+        hay = " ".join(filter(None, [d.title, d.client, d.ministry, d.engagement])).lower()
+        if all(w in hay for w in words):
+            out.add(d.doc_id)
+    return out
+
+
+def _snippet(text: str, q: str, width: int = 260) -> str:
+    """A short window of the passage around the first query word it contains."""
+    flat = " ".join((text or "").split())
+    words = [w for w in re.findall(r"\w+", q.lower()) if len(w) > 2]
+    lower = flat.lower()
+    at = min((i for i in (lower.find(w) for w in words) if i >= 0), default=0)
+    start = max(0, at - width // 3)
+    if start:
+        space = flat.find(" ", start)
+        start = space + 1 if 0 <= space < at else start
+    cut = flat[start : start + width]
+    if start + width < len(flat):
+        cut = cut[: cut.rfind(" ")] if " " in cut else cut
+        cut += "…"
+    return ("…" if start else "") + cut
+
+
+@app.get("/library/documents")
+def library_documents(
+    q: str = "",
+    client: list[str] = Query(default=[]),
+    sector: list[str] = Query(default=[]),
+    work_type: list[str] = Query(default=[]),
+    doc_type: list[str] = Query(default=[]),
+    state: list[str] = Query(default=[]),
+    year: list[str] = Query(default=[]),
+    outcome: list[str] = Query(default=[]),
+    sort: str = "best",
+    won_first: bool = True,
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """The documents the caller may read, searched and filtered, with counts
+    for every filter, a sector x type-of-work coverage grid and the
+    engagements (series of documents for one piece of work) among them."""
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    stmt = select(CorpusDocument)
+    if not reads_all_boards(user):
+        stmt = stmt.where(CorpusDocument.division_code == user.division_code)
+    docs = list(s.execute(stmt).scalars().all())
+
+    q = q.strip()[:300]
+    matches: dict[str, dict[str, Any]] | None = None
+    if q:
+        matches = db_search_documents(s, q, user=user) if db_has_corpus(s) else {}
+        for doc_id in _title_matches(q, docs):
+            hit = matches.setdefault(doc_id, {"score": 0.0, "snippet": "", "section": None})
+            hit["score"] = max(hit["score"], 0.9)
+        docs = [d for d in docs if d.doc_id in matches]
+
+    chosen = {
+        "client": set(client), "sector": set(sector), "work_type": set(work_type), "doc_type": set(doc_type),
+        "state": set(state), "year": set(year), "outcome": set(outcome),
+    }
+
+    def passes(d: CorpusDocument, skip: str | None = None) -> bool:
+        return all(
+            not values or _library_value(d, field) in values
+            for field, values in chosen.items()
+            if field != skip
+        )
+
+    items = [d for d in docs if passes(d)]
+
+    def score(d: CorpusDocument) -> float:
+        return (matches or {}).get(d.doc_id, {}).get("score", 0.0)
+
+    def newest(d: CorpusDocument) -> str:
+        return d.date or ""
+
+    if sort == "newest" or (sort == "best" and not q):
+        items.sort(key=newest, reverse=True)
+    elif sort == "value":
+        items.sort(key=lambda d: d.value_inr or 0.0, reverse=True)
+    else:
+        items.sort(key=score, reverse=True)
+    if won_first:
+        items.sort(key=lambda d: 0 if d.outcome == "successful" else 1)  # stable: keeps the order within each group
+
+    facets: dict[str, list[dict[str, Any]]] = {}
+    for field in _LIBRARY_FIELDS:
+        counts: dict[str, int] = {}
+        for d in docs:
+            if passes(d, skip=field):
+                v = _library_value(d, field)
+                if v:
+                    counts[v] = counts.get(v, 0) + 1
+        for v in chosen[field]:
+            counts.setdefault(v, 0)  # keep a chosen value visible even when nothing matches
+        if field == "year":
+            ordered = sorted(counts.items(), key=lambda kv: kv[0], reverse=True)
+        else:
+            ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        facets[field] = [
+            {"value": v, "label": _OUTCOME_FACET_LABELS.get(v, v) if field == "outcome" else v, "count": n}
+            for v, n in ordered
+        ]
+
+    row_counts: dict[str, int] = {}
+    col_counts: dict[str, int] = {}
+    for d in items:
+        row_counts[d.sector or "Other"] = row_counts.get(d.sector or "Other", 0) + 1
+        col_counts[d.work_type or "Other"] = col_counts.get(d.work_type or "Other", 0) + 1
+    rows = [r for r, _ in sorted(row_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:_GRID_ROWS]]
+    cols = [c for c, _ in sorted(col_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:_GRID_COLS]]
+    cells: dict[str, dict[str, dict[str, int]]] = {}
+    for d in items:
+        r, c = d.sector or "Other", d.work_type or "Other"
+        if r in rows and c in cols:
+            cell = cells.setdefault(r, {}).setdefault(c, {"count": 0, "won": 0})
+            cell["count"] += 1
+            cell["won"] += 1 if d.outcome == "successful" else 0
+
+    series: dict[str, list[CorpusDocument]] = {}
+    for d in items:
+        if d.engagement:
+            series.setdefault(d.engagement, []).append(d)
+    engagements = [
+        {
+            "engagement": name,
+            "client": members[0].client or members[0].ministry,
+            "documents": [_doc_summary(m) for m in sorted(members, key=newest)],
+        }
+        for name, members in series.items()
+        if len(members) > 1
+    ]
+    engagements.sort(key=lambda e: (-len(e["documents"]), e["engagement"]))
+
+    def result(d: CorpusDocument) -> dict[str, Any]:
+        out = _doc_summary(d)
+        hit = (matches or {}).get(d.doc_id)
+        if hit and hit.get("snippet"):
+            out["snippet"] = _snippet(hit["snippet"], q)
+            out["section"] = hit.get("section")
+        return out
+
+    return {
+        "query": q,
+        "total": len(items),
+        "items": [result(d) for d in items[:200]],
+        "facets": facets,
+        "grid": {"rows": rows, "cols": cols, "cells": cells},
+        "engagements": engagements[:30],
     }
 
 

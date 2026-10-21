@@ -116,6 +116,10 @@ class Draft(Base):
     # draft is ever sent to an outside service (see ai_guard). Set once by
     # the maker; there is deliberately no way to switch it off afterwards.
     ai_restricted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false(), nullable=False)
+    # Excerpts the maker highlighted in the Reader and started this draft
+    # from: [{doc_id, title, page, quote}], passed to intake and generation
+    # as reference material.
+    reference_excerpts: Mapped[Optional[list[dict[str, Any]]]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
@@ -216,10 +220,22 @@ class CorpusDocument(Base):
     )
     visibility: Mapped[str] = mapped_column(String(32), default="division_only", nullable=False)
     full_text: Mapped[Optional[str]] = mapped_column(Text)
-    # successful|unsuccessful|pending|unknown — schema-only for now (all
-    # current docs backfilled to "successful"); real outcome tagging data
-    # (CSV/folder convention) is a fast-follow once delivered.
+    # successful|unsuccessful|pending|unknown. Work orders are awarded work,
+    # so always "successful"; proposals come from data/corpus_metadata.csv's
+    # outcome column, else stay "unknown" (never guessed as unsuccessful).
     outcome: Mapped[Optional[str]] = mapped_column(String(16))
+    # Library facets, from data/corpus_metadata.csv (corpus_meta.backfill):
+    # client is the ministry/state/body the work was for; work_type is the
+    # kind of engagement ("Project Management Unit (PMU)", "Third-Party
+    # Evaluation"); engagement names the series a document belongs to,
+    # taken from its title ("CPGRAMS PMU": the proposals and every work
+    # order); doc_type is "Proposal" or "Work order".
+    client: Mapped[Optional[str]] = mapped_column(String(300))
+    state: Mapped[Optional[str]] = mapped_column(String(64))
+    sector: Mapped[Optional[str]] = mapped_column(String(120))
+    work_type: Mapped[Optional[str]] = mapped_column(String(120))
+    engagement: Mapped[Optional[str]] = mapped_column(String(200))
+    doc_type: Mapped[Optional[str]] = mapped_column(String(32))
     # 0..1 Jev "this reads like a prompt-injection attempt, not genuine
     # institutional content" score (plan item 10) — None means unscreened
     # (Jev unconfigured/failed at ingest time), never "confirmed safe".
@@ -344,3 +360,24 @@ class IngestionQuota(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
+
+
+class ReaderHighlight(Base):
+    """A passage one person highlighted in the Reader. Private to that
+    person; the source document itself is never modified."""
+
+    __tablename__ = "reader_highlights"
+    __table_args__ = (Index("ix_reader_highlight_owner_doc", "employee_id", "doc_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    employee_id: Mapped[str] = mapped_column(
+        String(16), ForeignKey("users.employee_id", ondelete="CASCADE"), nullable=False
+    )
+    doc_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    page: Mapped[int] = mapped_column(Integer, nullable=False)  # first page the highlight touches
+    # [{page, x, y, w, h}], each a fraction (0..1) of its page's width/height,
+    # so highlights sit in the same place at any zoom.
+    rects: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    quote: Mapped[str] = mapped_column(Text, nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)

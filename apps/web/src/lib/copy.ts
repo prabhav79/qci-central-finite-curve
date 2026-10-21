@@ -8,6 +8,7 @@ const TRIGGER_LABELS: Record<string, string> = {
   agent_replace: "AI edit",
   worker_seed: "From template",
   fixture_load: "Imported",
+  reader_excerpt: "Excerpt from the Reader",
 };
 
 export function versionLabel(v: NonNullable<DraftRecord["versions"]>[number]): string {

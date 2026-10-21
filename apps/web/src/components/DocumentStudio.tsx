@@ -21,6 +21,8 @@ import {
   type CorpusHit,
   type DraftSession,
   type InboxItem,
+  type ReaderHighlight,
+  addExcerptToDraft,
   apiGet,
   apiJson,
   createDraft,
@@ -31,6 +33,7 @@ import {
   integrationsHealth,
   isPersonasMode,
   listDrafts,
+  listHighlights,
   listVersions,
   logout,
   saveDraftFile,
@@ -152,6 +155,7 @@ export function DocumentStudio({
   const [threadsRefreshKey, setThreadsRefreshKey] = useState(0);
   const [decisionDialog, setDecisionDialog] = useState<{ level: 1 | 2; kind: DecisionKind } | null>(null);
   const [newDraftOpen, setNewDraftOpen] = useState(false);
+  const [references, setReferences] = useState<ReaderHighlight[]>([]);
   // The intake Q&A runs in its own overlay; once it finishes (or is
   // skipped), pendingGeneration hands the enriched brief to AgentPanel.
   const [intakeState, setIntakeState] = useState<{
@@ -328,6 +332,24 @@ export function DocumentStudio({
     void loadDraft(openId, persona);
   }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // "New draft from this" in the Reader arrives with the chosen highlights.
+  useEffect(() => {
+    if (searchParams.get("new") !== "1") return;
+    const ids = (searchParams.get("ref") ?? "")
+      .split(",")
+      .map(Number)
+      .filter((n) => Number.isInteger(n) && n > 0);
+    router.replace("/studio");
+    setReferences([]);
+    setNewDraftOpen(true);
+    if (!ids.length) return;
+    void listHighlights(persona)
+      .then((res) =>
+        setReferences(ids.map((id) => res.items.find((h) => h.id === id)).filter((h) => h !== undefined)),
+      )
+      .catch(() => setReferences([]));
+  }, [searchParams]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     const onBeforeUnload = (ev: BeforeUnloadEvent) => {
       if (!dirty) return;
@@ -386,7 +408,13 @@ export function DocumentStudio({
   const handleAutoRunConsumed = useCallback(() => setPendingGeneration(null), []);
   const handleThreadsChanged = useCallback(() => setThreadsRefreshKey((k) => k + 1), []);
 
-  async function onCreate(title: string, brief: string, template: TemplateChoice, confidential: boolean) {
+  async function onCreate(
+    title: string,
+    brief: string,
+    template: TemplateChoice,
+    confidential: boolean,
+    referenceIds: number[],
+  ) {
     setBusy(true);
     setError(null);
     try {
@@ -399,9 +427,19 @@ export function DocumentStudio({
             ? { templateSource: "corpus_doc" as const, corpusDocId: template.corpusDocId }
             : { templateSource: "catalog" as const }),
           aiRestricted: confidential,
+          referenceHighlightIds: referenceIds,
         },
       );
       setNewDraftOpen(false);
+      setReferences([]);
+      // Without a brief there's no first draft to write, so the highlights go into the page itself.
+      if (referenceIds.length && !brief.trim()) {
+        try {
+          await addExcerptToDraft(persona, res.draft.id, referenceIds);
+        } catch (e) {
+          setError(errorText(e));
+        }
+      }
       await loadDraft(res.draft.id, persona);
       if (brief.trim()) {
         setFocusGenerateSignal((n) => n + 1);
@@ -807,7 +845,12 @@ export function DocumentStudio({
         onChoiceChange={setLlmChoice}
         serverLlm={me?.server_llm}
         isAdmin={isAdmin}
-        onCancel={() => setNewDraftOpen(false)}
+        references={references}
+        onRemoveReference={(id) => setReferences((rs) => rs.filter((r) => r.id !== id))}
+        onCancel={() => {
+          setNewDraftOpen(false);
+          setReferences([]);
+        }}
         onConfirm={onCreate}
       />
 

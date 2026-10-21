@@ -320,7 +320,13 @@ export async function createDraft(
   persona: PersonaKey,
   title: string,
   templateCode = "BLANK",
-  opts?: { templateSource?: "catalog" | "corpus_doc"; corpusDocId?: string; aiRestricted?: boolean },
+  opts?: {
+    templateSource?: "catalog" | "corpus_doc";
+    corpusDocId?: string;
+    aiRestricted?: boolean;
+    /** Reader highlights (the caller's own) this draft starts from. */
+    referenceHighlightIds?: number[];
+  },
 ) {
   return apiJson<{ draft: DraftRecord; session: DraftSession }>("/drafts", persona, {
     method: "POST",
@@ -330,6 +336,7 @@ export async function createDraft(
       template_source: opts?.templateSource ?? "catalog",
       corpus_doc_id: opts?.corpusDocId,
       ai_restricted: opts?.aiRestricted ?? false,
+      reference_highlight_ids: opts?.referenceHighlightIds ?? [],
     }),
   });
 }
@@ -710,7 +717,12 @@ export type AgentFrame =
   | {
       type: "faithfulness_flag";
       section: string;
-      flags: { claim: string; score: number }[];
+      flags: {
+        claim: string;
+        score: number;
+        /** The retrieved passage closest to the claim, to compare against. */
+        source?: { doc_id: string; title: string; passage: string } | null;
+      }[];
     }
   | {
       type: "ready_to_generate";
@@ -926,4 +938,132 @@ export async function ragQuery(
       draft_id: opts?.draftId ?? undefined,
     }),
   });
+}
+
+// --------------------------------------------------------------------------- //
+// Reader: original documents, private highlights, excerpts into drafts
+// --------------------------------------------------------------------------- //
+
+export type LibraryDoc = {
+  doc_id: string;
+  title: string;
+  client?: string | null;
+  ministry?: string | null;
+  state?: string | null;
+  sector?: string | null;
+  work_type?: string | null;
+  engagement?: string | null;
+  doc_type?: string | null;
+  date?: string | null;
+  value_inr?: number | null;
+  outcome: "successful" | "unsuccessful" | "pending" | "unknown";
+  /** "Won", "Not won", "Pending"; null when unknown. */
+  outcome_label?: string | null;
+};
+
+export type ReaderDocument = {
+  document: LibraryDoc;
+  file_url: string;
+  /** The rest of this document's engagement series, oldest first (empty when it stands alone). */
+  series: LibraryDoc[];
+  similar: LibraryDoc[];
+};
+
+/** A rectangle as fractions (0..1) of its page, so it fits any zoom. */
+export type HighlightRect = { page: number; x: number; y: number; w: number; h: number };
+
+export type ReaderHighlight = {
+  id: number;
+  doc_id: string;
+  doc_title?: string | null;
+  page: number;
+  rects: HighlightRect[];
+  quote: string;
+  note?: string | null;
+  created_at?: string | null;
+};
+
+export type InsertableDraft = { id: string; title: string; status: string; updated_at?: string | null };
+
+export async function getReaderDocument(persona: PersonaKey, docId: string) {
+  return apiGet<ReaderDocument>(`/reader/documents/${encodeURIComponent(docId)}`, persona);
+}
+
+/** What PDF.js needs to fetch a document with the caller's identity. */
+export async function readerPdfSource(persona: PersonaKey, fileUrl: string) {
+  return {
+    url: `${API_BASE}${fileUrl}`,
+    httpHeaders: await identityHeaders(persona),
+    withCredentials: true,
+  };
+}
+
+export async function listHighlights(persona: PersonaKey, docId?: string) {
+  const q = docId ? `?doc_id=${encodeURIComponent(docId)}` : "";
+  return apiGet<{ items: ReaderHighlight[] }>(`/reader/highlights${q}`, persona);
+}
+
+export async function createHighlight(
+  persona: PersonaKey,
+  body: { doc_id: string; page: number; rects: HighlightRect[]; quote: string; note?: string },
+) {
+  return apiJson<ReaderHighlight>("/reader/highlights", persona, { method: "POST", body: JSON.stringify(body) });
+}
+
+export async function updateHighlightNote(persona: PersonaKey, id: number, note: string) {
+  return apiJson<ReaderHighlight>(`/reader/highlights/${id}`, persona, {
+    method: "PATCH",
+    body: JSON.stringify({ note }),
+  });
+}
+
+export async function deleteHighlight(persona: PersonaKey, id: number) {
+  return apiJson<{ ok: boolean }>(`/reader/highlights/${id}`, persona, { method: "DELETE" });
+}
+
+export async function listInsertableDrafts(persona: PersonaKey) {
+  return apiGet<{ items: InsertableDraft[] }>("/reader/my-drafts", persona);
+}
+
+/** Adds highlights to the end of a draft, each quoted with its source, as one new version. */
+export async function addExcerptToDraft(persona: PersonaKey, draftId: string, highlightIds: number | number[]) {
+  const ids = Array.isArray(highlightIds) ? highlightIds : [highlightIds];
+  return apiJson<{ ok: boolean; version: number; draft: { id: string; title: string } }>(
+    `/drafts/${encodeURIComponent(draftId)}/excerpts`,
+    persona,
+    { method: "POST", body: JSON.stringify({ highlight_ids: ids }) },
+  );
+}
+
+// --------------------------------------------------------------------------- //
+// Library: the corpus as documents, searched and filtered, won work first
+// --------------------------------------------------------------------------- //
+
+export const LIBRARY_FIELDS = ["outcome", "work_type", "sector", "client", "doc_type", "year", "state"] as const;
+export type LibraryField = (typeof LIBRARY_FIELDS)[number];
+
+export type LibraryResult = LibraryDoc & { snippet?: string; section?: string | null };
+
+export type LibraryResponse = {
+  query: string;
+  total: number;
+  items: LibraryResult[];
+  facets: Record<LibraryField, { value: string; label: string; count: number }[]>;
+  /** Rows are sectors, columns are types of work. */
+  grid: { rows: string[]; cols: string[]; cells: Record<string, Record<string, { count: number; won: number }>> };
+  engagements: { engagement: string; client?: string | null; documents: LibraryDoc[] }[];
+};
+
+export async function libraryDocuments(
+  persona: PersonaKey,
+  opts: { q?: string; filters?: Partial<Record<LibraryField, string[]>>; sort?: string; wonFirst?: boolean },
+) {
+  const params = new URLSearchParams();
+  if (opts.q?.trim()) params.set("q", opts.q.trim());
+  for (const [field, values] of Object.entries(opts.filters ?? {})) {
+    for (const v of values ?? []) params.append(field, v);
+  }
+  if (opts.sort) params.set("sort", opts.sort);
+  if (opts.wonFirst === false) params.set("won_first", "false");
+  return apiGet<LibraryResponse>(`/library/documents?${params.toString()}`, persona);
 }

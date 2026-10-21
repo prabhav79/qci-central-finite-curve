@@ -6,9 +6,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps for python-docx + pypdf (libmagic occasionally needed)
+# System deps for python-docx + pypdf (libmagic occasionally needed).
+# LibreOffice Writer (headless) makes the Reader's PDF copies of Word files,
+# inside this container; Carlito/Caladea are metric-compatible stand-ins for
+# Calibri/Cambria so converted pages keep their layout.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl \
+    libreoffice-writer-nogui fonts-crosextra-carlito fonts-crosextra-caladea fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
 COPY apps/api/requirements.txt /app/requirements.txt

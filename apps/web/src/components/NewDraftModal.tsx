@@ -5,6 +5,7 @@ import {
   type CorpusHit,
   type GenerationTemplate,
   type PersonaKey,
+  type ReaderHighlight,
   type ServerLlm,
   corpusSearch,
   errorText,
@@ -31,6 +32,8 @@ export function NewDraftModal({
   onChoiceChange,
   serverLlm,
   isAdmin,
+  references = [],
+  onRemoveReference,
   onCancel,
   onConfirm,
 }: {
@@ -41,8 +44,17 @@ export function NewDraftModal({
   onChoiceChange: (next: LlmChoice) => void;
   serverLlm: ServerLlm | null | undefined;
   isAdmin: boolean;
+  /** Reader highlights this document starts from; they guide the first draft. */
+  references?: ReaderHighlight[];
+  onRemoveReference?: (id: number) => void;
   onCancel: () => void;
-  onConfirm: (title: string, brief: string, template: TemplateChoice, confidential: boolean) => Promise<void> | void;
+  onConfirm: (
+    title: string,
+    brief: string,
+    template: TemplateChoice,
+    confidential: boolean,
+    referenceIds: number[],
+  ) => Promise<void> | void;
 }) {
   const [title, setTitle] = useState("");
   const [confidential, setConfidential] = useState(false);
@@ -115,7 +127,13 @@ export function NewDraftModal({
         ? { source: "corpus_doc", corpusDocId: selectedDoc!.doc_id }
         : { source: "catalog", templateCode };
     try {
-      await onConfirm(title.trim(), draftBrief, template, confidential);
+      await onConfirm(
+        title.trim(),
+        draftBrief,
+        template,
+        confidential,
+        references.map((r) => r.id),
+      );
     } catch (e) {
       setError(errorText(e));
     }
@@ -126,6 +144,43 @@ export function NewDraftModal({
   return (
     <Modal open={open} onClose={busy ? undefined : onCancel}>
       <h2 className="mb-3 text-base font-semibold text-text">New document</h2>
+
+      {references.length > 0 && (
+        <div className="mb-3 rounded-lg border border-border bg-surface-sunken p-2">
+          <p className="mb-1 text-[13px] font-medium text-text">
+            Starting from {references.length} highlight{references.length === 1 ? "" : "s"}
+          </p>
+          <ul className="max-h-36 space-y-1 overflow-auto">
+            {references.map((r) => (
+              <li key={r.id} className="flex items-start gap-2 text-xs">
+                <span className="min-w-0 flex-1 border-l-[3px] border-[#F2C200] pl-2">
+                  <span className="line-clamp-2 text-text">{r.quote}</span>
+                  <span className="text-text-muted">
+                    {r.doc_title ?? r.doc_id}, p. {r.page}
+                  </span>
+                </span>
+                {onRemoveReference && (
+                  <button
+                    type="button"
+                    aria-label="Remove this highlight"
+                    onClick={() => onRemoveReference(r.id)}
+                    className="rounded px-1 text-text-muted hover:bg-surface hover:text-text"
+                  >
+                    ×
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1 text-xs text-text-muted">
+            {confidential
+              ? "They'll be placed in the new document with their sources."
+              : brief.trim()
+                ? "The assistant will use these, and the documents they come from, in the first draft."
+                : "They'll be placed in the new document with their sources. Or describe what you need below and the assistant will write a first draft from them."}
+          </p>
+        </div>
+      )}
 
       <label className="block text-[13px] text-text-muted">
         Title

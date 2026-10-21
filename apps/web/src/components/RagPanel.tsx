@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { renderAnswerText } from "@/lib/inlineMarkdown";
+import { passagePhrase, readerHref } from "@/lib/reader";
 import {
   type CorpusHit,
   type PersonaKey,
@@ -114,16 +116,25 @@ export function RagPanel({
                         {c.ministry && <span className="text-text-muted"> · {c.ministry}</span>}
                       </div>
                       <div className="line-clamp-2 text-xs text-text-muted">{c.text}</div>
-                      {canInsert && onInsertCitation && (
-                        <button
-                          type="button"
-                          disabled={inserting === c.chunk_id}
-                          onClick={() => void handleInsert(c)}
-                          className="rounded border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+                      <div className="flex flex-wrap items-center gap-2">
+                        {canInsert && onInsertCitation && (
+                          <button
+                            type="button"
+                            disabled={inserting === c.chunk_id}
+                            onClick={() => void handleInsert(c)}
+                            className="rounded border border-accent/30 bg-accent/10 px-2 py-0.5 text-xs text-accent transition-colors hover:bg-accent/20 disabled:opacity-50"
+                          >
+                            {inserting === c.chunk_id ? "Adding…" : "Add to document"}
+                          </button>
+                        )}
+                        <Link
+                          href={readerHref(c.doc_id, passagePhrase(c.text))}
+                          target="_blank"
+                          className="text-xs text-accent hover:underline"
                         >
-                          {inserting === c.chunk_id ? "Adding…" : "Add to document"}
-                        </button>
-                      )}
+                          Read the source
+                        </Link>
+                      </div>
                     </li>
                   ))}
                 </ul>

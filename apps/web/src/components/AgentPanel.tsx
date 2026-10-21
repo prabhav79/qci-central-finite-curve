@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type AgentFrame, type PersonaKey, type ServerLlm, errorText, streamAgentChat } from "@/lib/cfcApi";
 import { type LlmChoice, agentRequestFields, choiceReady, missingKeyMessage } from "@/lib/llmChoice";
 import { ModelPicker } from "@/components/ModelPicker";
+import { passagePhrase, readerHref } from "@/lib/reader";
 
 type SectionStatus = "pending" | "running" | "done" | "failed";
 
@@ -23,7 +25,7 @@ type Run = {
   stopped?: boolean;
 };
 
-type Flag = { section: string; claim: string };
+type Flag = { section: string; claim: string; source?: { doc_id: string; title: string; passage: string } | null };
 
 type Summary = { generated: number; failed: string[] };
 
@@ -283,7 +285,7 @@ export function AgentPanel({
               }
               case "faithfulness_flag": {
                 const title = sectionList.find((x) => x.label === frame.section)?.title ?? frame.section;
-                setFlags((f) => [...f, ...frame.flags.map((fl) => ({ section: title, claim: fl.claim }))]);
+                setFlags((f) => [...f, ...frame.flags.map((fl) => ({ section: title, claim: fl.claim, source: fl.source }))]);
                 break;
               }
               case "done": {
@@ -460,7 +462,21 @@ export function AgentPanel({
                 {flags.map((f, i) => (
                   <li key={i} className="text-text">
                     &ldquo;{f.claim}&rdquo;
-                    <span className="block text-xs text-text-muted">{f.section}</span>
+                    <span className="block text-xs text-text-muted">
+                      {f.section}
+                      {f.source && (
+                        <>
+                          {" · "}
+                          <Link
+                            href={readerHref(f.source.doc_id, passagePhrase(f.source.passage))}
+                            target="_blank"
+                            className="text-accent hover:underline"
+                          >
+                            Compare with {f.source.title || "the source"}
+                          </Link>
+                        </>
+                      )}
+                    </span>
                   </li>
                 ))}
               </ul>

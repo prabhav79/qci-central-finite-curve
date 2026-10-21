@@ -240,3 +240,26 @@ def check_section(section_text: str, evidence: str) -> list[dict[str, object]]:
     # A reviewer acts on a short list; show only the least-supported few.
     flags.sort(key=lambda f: f["score"])
     return flags[:_MAX_FLAGS_PER_SECTION]
+
+
+_WORD_RE = re.compile(r"[a-z0-9]{4,}")
+
+
+def closest_source(claim: str, sources: list[dict[str, str]]) -> dict[str, str] | None:
+    """The retrieved passage that shares the most words with a flagged claim,
+    so the reviewer can open it and compare. None when nothing overlaps."""
+    words = set(_WORD_RE.findall(claim.lower()))
+    if not words:
+        return None
+    best: tuple[int, dict[str, str], str] | None = None
+    for src in sources:
+        sentences = [x for x in _SENTENCE_SPLIT_RE.split(src.get("text") or "") if x.strip()]
+        for i in range(len(sentences)):
+            window = " ".join(sentences[i : i + 2])
+            score = len(words & set(_WORD_RE.findall(window.lower())))
+            if best is None or score > best[0]:
+                best = (score, src, window)
+    if best is None or best[0] < 2:
+        return None
+    _, src, window = best
+    return {"doc_id": src["doc_id"], "title": src.get("title") or "", "passage": " ".join(window.split())[:500]}

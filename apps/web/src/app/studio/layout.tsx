@@ -11,6 +11,8 @@ const NAV_ITEMS = [
   { href: "/studio", label: "Documents" },
   { href: "/studio/inbox", label: "Approvals" },
   { href: "/studio/templates", label: "Templates" },
+  { href: "/studio/library", label: "Library" },
+  { href: "/studio/reader", label: "Reader" },
   { href: "/studio/graph", label: "Knowledge graph" },
 ];
 

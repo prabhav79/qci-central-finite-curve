@@ -70,4 +70,5 @@ ingestion.log
 
 
 apps/web/public/superdoc-workers/
+apps/web/public/pdfjs/
 

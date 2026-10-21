@@ -145,3 +145,28 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Reader highlights: drawn between the PDF page and PDF.js's transparent
+   text layer, so text stays selectable and the yellow multiplies onto ink. */
+.cfc-hl-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cfc-hl {
+  position: absolute;
+  border-radius: 2px;
+  background: rgb(255 214 10 / 0.45);
+  mix-blend-mode: multiply;
+}
+.cfc-hl-flash {
+  animation: cfc-hl-flash 0.6s ease-in-out 3;
+}
+@keyframes cfc-hl-flash {
+  50% {
+    background: rgb(255 160 0 / 0.75);
+  }
+}
+.cfc-pdf-container .pdfViewer .page {
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.12);
+}
