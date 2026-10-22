@@ -30,8 +30,10 @@ const FIELD_LABELS: Record<LibraryField, string> = {
 type Filters = Partial<Record<LibraryField, string[]>>;
 type View = "documents" | "coverage" | "engagements";
 
+const STOPWORDS = new Set(["and", "the", "for", "with", "from", "that", "this", "into", "are", "was", "how", "what", "who"]);
+
 function queryWords(q: string): string[] {
-  return (q.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length > 2);
+  return (q.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((w) => w.length > 2 && !STOPWORDS.has(w));
 }
 
 /** The snippet with the query's words marked. */
