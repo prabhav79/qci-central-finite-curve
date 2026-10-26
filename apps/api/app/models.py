@@ -381,3 +381,16 @@ class ReaderHighlight(Base):
     quote: Mapped[str] = mapped_column(Text, nullable=False)
     note: Mapped[Optional[str]] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)
+
+
+class ReaderSession(Base):
+    """When one person's current reading session began. Highlights made since
+    then are "this session", the rest "earlier"; a session also ends on its
+    own after a break (main._reader_session_start)."""
+
+    __tablename__ = "reader_sessions"
+
+    employee_id: Mapped[str] = mapped_column(
+        String(16), ForeignKey("users.employee_id", ondelete="CASCADE"), primary_key=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow, nullable=False)

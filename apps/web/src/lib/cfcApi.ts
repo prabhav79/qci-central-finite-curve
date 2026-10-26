@@ -981,7 +981,12 @@ export type ReaderHighlight = {
   quote: string;
   note?: string | null;
   created_at?: string | null;
+  /** Made in the current reading session (otherwise "earlier"). */
+  in_session?: boolean;
 };
+
+/** A reading session ends after `break_hours` without a new highlight. */
+export type ReaderSessionInfo = { active: boolean; started_at?: string | null; break_hours: number };
 
 export type InsertableDraft = { id: string; title: string; status: string; updated_at?: string | null };
 
@@ -1000,7 +1005,12 @@ export async function readerPdfSource(persona: PersonaKey, fileUrl: string) {
 
 export async function listHighlights(persona: PersonaKey, docId?: string) {
   const q = docId ? `?doc_id=${encodeURIComponent(docId)}` : "";
-  return apiGet<{ items: ReaderHighlight[] }>(`/reader/highlights${q}`, persona);
+  return apiGet<{ items: ReaderHighlight[]; session: ReaderSessionInfo }>(`/reader/highlights${q}`, persona);
+}
+
+/** Ends the current reading session: everything so far moves to "earlier". */
+export async function startFreshSession(persona: PersonaKey) {
+  return apiJson<{ session: ReaderSessionInfo }>("/reader/session", persona, { method: "POST" });
 }
 
 export async function createHighlight(
@@ -1025,10 +1035,10 @@ export async function listInsertableDrafts(persona: PersonaKey) {
   return apiGet<{ items: InsertableDraft[] }>("/reader/my-drafts", persona);
 }
 
-/** Adds highlights to the end of a draft, each quoted with its source, as one new version. */
+/** Adds highlights to the end of a draft as one new version, under "Reference excerpts", grouped by source document. */
 export async function addExcerptToDraft(persona: PersonaKey, draftId: string, highlightIds: number | number[]) {
   const ids = Array.isArray(highlightIds) ? highlightIds : [highlightIds];
-  return apiJson<{ ok: boolean; version: number; draft: { id: string; title: string } }>(
+  return apiJson<{ ok: boolean; version: number; count: number; draft: { id: string; title: string } }>(
     `/drafts/${encodeURIComponent(draftId)}/excerpts`,
     persona,
     { method: "POST", body: JSON.stringify({ highlight_ids: ids }) },

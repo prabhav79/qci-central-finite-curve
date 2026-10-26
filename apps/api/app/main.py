@@ -22,7 +22,7 @@ import re
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Literal
 from urllib import request as urlrequest
@@ -80,7 +80,18 @@ from .corpus_db import (
     recompute_all_edges,
 )
 from .db import ROOT, SessionLocal, ensure_pgvector, get_session
-from .models import AuditLog, CorpusDocument, Division, Draft, DraftApproval, DraftVersion, ReaderHighlight, Thread, User
+from .models import (
+    AuditLog,
+    CorpusDocument,
+    Division,
+    Draft,
+    DraftApproval,
+    DraftVersion,
+    ReaderHighlight,
+    ReaderSession,
+    Thread,
+    User,
+)
 from .rag import answer_query
 from .seed import seed_divisions_and_users
 from .storage import Bucket, default_bucket
@@ -2621,7 +2632,7 @@ def _doc_summary(d: CorpusDocument) -> dict[str, Any]:
     }
 
 
-def _highlight_dict(h: ReaderHighlight, title: str | None = None) -> dict[str, Any]:
+def _highlight_dict(h: ReaderHighlight, title: str | None = None, in_session: bool = False) -> dict[str, Any]:
     return {
         "id": h.id,
         "doc_id": h.doc_id,
@@ -2631,7 +2642,48 @@ def _highlight_dict(h: ReaderHighlight, title: str | None = None) -> dict[str, A
         "quote": h.quote,
         "note": h.note,
         "created_at": _iso(h.created_at),
+        "in_session": in_session,
     }
+
+
+# A reading session ends after this long without a new highlight.
+_SESSION_BREAK = timedelta(hours=3)
+
+
+def _aware(dt: datetime) -> datetime:
+    """SQLite hands back naive datetimes; every stored time is UTC."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _latest_highlight_at(s: Session, user: User) -> datetime | None:
+    latest = s.scalar(select(func.max(ReaderHighlight.created_at)).where(ReaderHighlight.employee_id == user.employee_id))
+    return _aware(latest) if latest else None
+
+
+def _reader_session_start(s: Session, user: User, latest: datetime | None) -> datetime | None:
+    """When the caller's current reading session began, or None if there is
+    no current session: never started, or over after a _SESSION_BREAK with
+    no new highlight (counted from "start fresh" if nothing came after it)."""
+    row = s.get(ReaderSession, user.employee_id)
+    if row is None:
+        return None
+    start = _aware(row.started_at)
+    last_activity = max(start, latest) if latest else start
+    return start if _utc_now() - last_activity <= _SESSION_BREAK else None
+
+
+def _session_info(start: datetime | None) -> dict[str, Any]:
+    return {"active": start is not None, "started_at": _iso(start), "break_hours": int(_SESSION_BREAK.total_seconds() // 3600)}
+
+
+def _start_reader_session(s: Session, user: User) -> datetime:
+    now = _utc_now()
+    row = s.get(ReaderSession, user.employee_id)
+    if row is None:
+        s.add(ReaderSession(employee_id=user.employee_id, started_at=now))
+    else:
+        row.started_at = now
+    return now
 
 
 def _reference_excerpts(s: Session, user: User, highlight_ids: list[int]) -> list[dict[str, Any]]:
@@ -2649,7 +2701,13 @@ def _reference_excerpts(s: Session, user: User, highlight_ids: list[int]) -> lis
         ).scalars().all()
     }
     return [
-        {"doc_id": h.doc_id, "title": titles.get(h.doc_id, h.doc_id), "page": h.page, "quote": h.quote[:2000]}
+        {
+            "doc_id": h.doc_id,
+            "title": titles.get(h.doc_id, h.doc_id),
+            "page": h.page,
+            "quote": h.quote[:2000],
+            "note": (h.note or "")[:500] or None,
+        }
         for h in (by_id.get(i) for i in highlight_ids)
         if h is not None
     ]
@@ -2668,7 +2726,8 @@ def _reference_block(draft: Draft) -> str:
     ]
     for e in excerpts:
         quote = " ".join(str(e.get("quote", "")).split())
-        lines.append(f"- “{quote}” ({e.get('title')}, p. {e.get('page')})")
+        note = f" — the author's note: {e['note']}" if e.get("note") else ""
+        lines.append(f"- “{quote}” ({e.get('title')}, p. {e.get('page')}){note}")
     return "\n".join(lines)
 
 
@@ -2694,7 +2753,7 @@ class HighlightNoteBody(BaseModel):
 
 class ExcerptBody(BaseModel):
     highlight_id: int | None = None
-    highlight_ids: list[int] = Field(default_factory=list, max_length=20)
+    highlight_ids: list[int] = Field(default_factory=list, max_length=100)
 
 
 @app.get("/reader/documents/{doc_id}")
@@ -2761,22 +2820,43 @@ def reader_highlights(
     cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """The caller's own highlights: for one document, or all of them (newest first)."""
+    """The caller's own highlights, for one document or all of them (newest
+    first), each marked as in the current reading session or not. Highlights
+    on documents the caller can no longer see are left out."""
     user = _resolve_user(s, x_cfc_user, cfc_session)
     stmt = select(ReaderHighlight).where(ReaderHighlight.employee_id == user.employee_id)
     if doc_id:
         _visible_document(s, user, doc_id)
         stmt = stmt.where(ReaderHighlight.doc_id == doc_id).order_by(ReaderHighlight.page, ReaderHighlight.id)
     else:
-        stmt = stmt.order_by(ReaderHighlight.created_at.desc()).limit(200)
+        stmt = stmt.order_by(ReaderHighlight.created_at.desc(), ReaderHighlight.id.desc()).limit(2000)
     rows = s.execute(stmt).scalars().all()
-    titles = {
-        d.doc_id: d.title
-        for d in s.execute(
-            select(CorpusDocument).where(CorpusDocument.doc_id.in_({h.doc_id for h in rows}))
-        ).scalars().all()
+    docs_stmt = select(CorpusDocument).where(CorpusDocument.doc_id.in_({h.doc_id for h in rows}))
+    if not reads_all_boards(user):
+        docs_stmt = docs_stmt.where(CorpusDocument.division_code == user.division_code)
+    titles = {d.doc_id: d.title for d in s.execute(docs_stmt).scalars().all()}
+    start = _reader_session_start(s, user, _latest_highlight_at(s, user))
+    return {
+        "items": [
+            _highlight_dict(h, titles[h.doc_id], start is not None and _aware(h.created_at) >= start)
+            for h in rows
+            if h.doc_id in titles
+        ],
+        "session": _session_info(start),
     }
-    return {"items": [_highlight_dict(h, titles.get(h.doc_id)) for h in rows]}
+
+
+@app.post("/reader/session")
+def reader_start_fresh(
+    x_cfc_user: str | None = Header(default=None, alias="X-CFC-User"),
+    cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
+    s: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Starts a new reading session: everything so far moves to "earlier"."""
+    user = _resolve_user(s, x_cfc_user, cfc_session)
+    start = _start_reader_session(s, user)
+    s.commit()
+    return {"session": _session_info(start)}
 
 
 @app.post("/reader/highlights")
@@ -2802,6 +2882,8 @@ def reader_add_highlight(
             rects.append({"page": int(r.page), **{k: round(v, 5) for k, v in zip("xywh", (x0, y0, x1 - x0, y1 - y0))}})
     if not rects:
         raise HTTPException(status_code=400, detail="Select some text to highlight.")
+    if _reader_session_start(s, user, _latest_highlight_at(s, user)) is None:
+        _start_reader_session(s, user)  # first highlight after a break: a new session
     h = ReaderHighlight(
         employee_id=user.employee_id,
         doc_id=doc.doc_id,
@@ -2813,7 +2895,7 @@ def reader_add_highlight(
     s.add(h)
     s.commit()
     s.refresh(h)
-    return _highlight_dict(h, doc.title)
+    return _highlight_dict(h, doc.title, in_session=True)
 
 
 def _own_highlight(s: Session, user: User, highlight_id: int) -> ReaderHighlight:
@@ -2871,6 +2953,58 @@ def reader_my_drafts(
     }
 
 
+_REFERENCE_HEADING = "Reference excerpts"
+_HEADING_STYLE_RE = re.compile(r"(?i)^(?:heading\s*(\d)|title)$")
+
+
+def _plain_md(text: str) -> str:
+    """Text placed inside markdown: a literal asterisk shouldn't start italics."""
+    return " ".join(text.replace("*", "∗").split())
+
+
+def _excerpt_section_state(path: Path) -> tuple[bool, str | None]:
+    """(the draft ends inside an open "Reference excerpts" section, the title
+    of its last heading), so repeat inserts continue that section rather
+    than starting a new one."""
+    try:
+        import docx  # type: ignore  # noqa: PLC0415
+
+        paragraphs = docx.Document(str(path)).paragraphs
+    except Exception:  # noqa: BLE001 — unreadable: just start a fresh section
+        return False, None
+    open_level: int | None = None
+    last: str | None = None
+    for para in paragraphs:
+        m = _HEADING_STYLE_RE.match((para.style.name if para.style is not None else "") or "")
+        text = para.text.strip()
+        if not m or not text:
+            continue
+        level = int(m.group(1) or 0)
+        if text.lower() == _REFERENCE_HEADING.lower():
+            open_level = level
+        elif open_level is not None and level <= open_level:
+            open_level = None
+        last = text
+    return open_level is not None, last
+
+
+def _excerpt_ops(
+    groups: list[tuple[str, list[ReaderHighlight]]], *, section_open: bool, last_heading: str | None
+) -> list[dict[str, Any]]:
+    """One paragraph per op: the section heading (unless already open), then
+    per document a sub-heading (unless it's the one just written) and its
+    excerpts in page order, each note in italics beneath its quote."""
+    lines: list[str] = [] if section_open else [f"## {_REFERENCE_HEADING}"]
+    for i, (title, items) in enumerate(groups):
+        if not (i == 0 and section_open and last_heading == title):
+            lines.append(f"### {_plain_md(title)}")
+        for h in items:
+            lines.append(f"“{_plain_md(h.quote)}” *(p. {h.page})*")
+            if h.note and h.note.strip():
+                lines.append(f"*Note: {_plain_md(h.note)}*")
+    return [{"kind": "insert_end", "text": line} for line in lines]
+
+
 @app.post("/drafts/{draft_id}/excerpts")
 def draft_add_excerpt(
     draft_id: str,
@@ -2879,9 +3013,10 @@ def draft_add_excerpt(
     cfc_session: str | None = Cookie(default=None, alias="cfc_session"),
     s: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Adds the caller's highlights to the end of a draft, each quoted with its
-    source and page, in one new version. No AI involved, so confidential
-    drafts accept it too."""
+    """Adds the caller's highlights to the end of a draft, in one new version,
+    under a "Reference excerpts" heading: grouped by source document (in the
+    order given) and in page order within each, with page numbers and the
+    caller's notes. No AI involved, so confidential drafts accept it too."""
     user = _resolve_user(s, x_cfc_user, cfc_session)
     draft = _load_draft(s, draft_id)
     flags = _session_for(s, user, draft)
@@ -2890,21 +3025,31 @@ def draft_add_excerpt(
     ids = list(dict.fromkeys(([body.highlight_id] if body.highlight_id else []) + body.highlight_ids))
     if not ids:
         raise HTTPException(status_code=422, detail="Choose a highlight to add.")
-    ops: list[dict[str, Any]] = []
-    sources: list[dict[str, Any]] = []
+    by_doc: dict[str, list[ReaderHighlight]] = {}
+    titles: dict[str, str] = {}
     for hid in ids:
         h = _own_highlight(s, user, hid)
         doc = _visible_document(s, user, h.doc_id)
-        ops.append({"kind": "insert_end", "text": f"“{h.quote}” *(Source: {doc.title}, p. {h.page})*"})
-        sources.append({"doc_id": doc.doc_id, "page": h.page})
+        titles[doc.doc_id] = doc.title or doc.doc_id
+        by_doc.setdefault(doc.doc_id, []).append(h)
+    groups = [
+        (titles[doc_id], sorted(items, key=lambda h: (h.page, min((r.get("y", 0) for r in h.rects), default=0))))
+        for doc_id, items in by_doc.items()
+    ]
+    current = s.execute(
+        select(DraftVersion).where(DraftVersion.draft_id == draft.id, DraftVersion.version == draft.current_version)
+    ).scalar_one_or_none()
+    section_open, last_heading = (
+        _excerpt_section_state(default_bucket().get_path(current.storage_key)) if current else (False, None)
+    )
     try:
         result = agent_mutate(
             AgentContext(session=s, user=user, draft=draft, session_flags=flags),
-            ops,
+            _excerpt_ops(groups, section_open=section_open, last_heading=last_heading),
             trigger="reader_excerpt",
         )
     except ToolError as e:
-        raise HTTPException(status_code=502, detail="The excerpt couldn't be added. Please try again.") from e
+        raise HTTPException(status_code=502, detail="The excerpts couldn't be added. Please try again.") from e
     _log_audit(
         s,
         actor=user,
@@ -2912,10 +3057,15 @@ def draft_add_excerpt(
         target_kind="draft",
         target_id=draft.id,
         division_code=draft.division_code,
-        details={"excerpts": sources},
+        details={"excerpts": [{"doc_id": h.doc_id, "page": h.page} for _, items in groups for h in items]},
     )
     s.commit()
-    return {"ok": True, "version": result.get("version"), "draft": {"id": draft.id, "title": draft.title}}
+    return {
+        "ok": True,
+        "version": result.get("version"),
+        "count": sum(len(items) for _, items in groups),
+        "draft": {"id": draft.id, "title": draft.title},
+    }
 
 
 # --------------------------------------------------------------------------- #

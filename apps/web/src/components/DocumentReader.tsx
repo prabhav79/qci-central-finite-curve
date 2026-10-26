@@ -7,12 +7,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   PERSONAS,
   type CorpusHit,
-  type InsertableDraft,
   type LibraryDoc,
   type PersonaKey,
   type ReaderDocument,
   type ReaderHighlight,
-  addExcerptToDraft,
+  type ReaderSessionInfo,
   corpusSearch,
   createHighlight,
   deleteHighlight,
@@ -20,14 +19,12 @@ import {
   getReaderDocument,
   isPersonasMode,
   listHighlights,
-  listInsertableDrafts,
   readerPdfSource,
-  updateHighlightNote,
+  startFreshSession,
 } from "@/lib/cfcApi";
-import { formatDateIST } from "@/lib/dates";
 import { useCurrentUser } from "@/lib/useCurrentUser";
+import { HighlightsPanel, useToast } from "./HighlightsPanel";
 import type { NewSelection, PdfSource, PdfViewerHandle } from "./PdfViewer";
-import { statusLabel } from "./StatusPill";
 
 const PdfViewer = dynamic(() => import("./PdfViewer").then((m) => m.PdfViewer), {
   ssr: false,
@@ -58,10 +55,6 @@ export function OutcomeBadge({ doc }: { doc: Pick<LibraryDoc, "outcome" | "outco
   );
 }
 
-function citation(h: ReaderHighlight, title: string): string {
-  return `“${h.quote}”\n— ${title}, p. ${h.page}`;
-}
-
 export function DocumentReader() {
   const { me } = useCurrentUser();
   const router = useRouter();
@@ -69,6 +62,7 @@ export function DocumentReader() {
   const docId = params.get("doc");
   const startPage = Number(params.get("page")) || undefined;
   const startFind = params.get("find") || undefined;
+  const startHighlight = Number(params.get("hl")) || undefined;
   const [persona, setPersona] = useState<PersonaKey>("arpit");
 
   if (!docId) {
@@ -81,6 +75,7 @@ export function DocumentReader() {
       persona={persona}
       startPage={startPage}
       startFind={startFind}
+      startHighlight={startHighlight}
       personaPicker={
         isPersonasMode(me) ? <PersonaPicker persona={persona} setPersona={setPersona} /> : null
       }
@@ -108,11 +103,68 @@ export function PersonaPicker({ persona, setPersona }: { persona: PersonaKey; se
   );
 }
 
+/** Link to a highlight: its document, opened at the passage. */
+export function highlightHref(h: Pick<ReaderHighlight, "id" | "doc_id" | "page">): string {
+  return `/studio/reader?doc=${encodeURIComponent(h.doc_id)}&page=${h.page}&hl=${h.id}`;
+}
+
+/** All of the person's highlights plus their reading session, kept in step with the server. */
+function useHighlights(persona: PersonaKey, say: (text: string) => void) {
+  const [items, setItems] = useState<ReaderHighlight[]>([]);
+  const [session, setSession] = useState<ReaderSessionInfo | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  const refresh = useCallback(async () => {
+    try {
+      const res = await listHighlights(persona);
+      setItems((current) => [...current.filter((h) => h.id < 0), ...res.items]);
+      setSession(res.session);
+    } catch (e) {
+      say(errorText(e));
+    } finally {
+      setLoaded(true);
+    }
+  }, [persona, say]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const remove = useCallback(
+    async (id: number) => {
+      let before: ReaderHighlight[] = [];
+      setItems((hs) => {
+        before = hs;
+        return hs.filter((h) => h.id !== id);
+      });
+      try {
+        await deleteHighlight(persona, id);
+      } catch (e) {
+        setItems(before);
+        say(errorText(e));
+      }
+    },
+    [persona, say],
+  );
+
+  const startFresh = useCallback(async () => {
+    try {
+      setSession((await startFreshSession(persona)).session);
+      setItems((hs) => hs.map((h) => ({ ...h, in_session: false })));
+    } catch (e) {
+      say(errorText(e));
+    }
+  }, [persona, say]);
+
+  return { items, setItems, session, loaded, refresh, remove, startFresh };
+}
+
 function ReaderDocumentView({
   docId,
   persona,
   startPage,
   startFind,
+  startHighlight,
   personaPicker,
   onOpen,
 }: {
@@ -120,41 +172,35 @@ function ReaderDocumentView({
   persona: PersonaKey;
   startPage?: number;
   startFind?: string;
+  startHighlight?: number;
   personaPicker: React.ReactNode;
   onOpen: (docId: string) => void;
 }) {
   const router = useRouter();
   const viewer = useRef<PdfViewerHandle | null>(null);
+  const [toast, say] = useToast();
+  const hl = useHighlights(persona, say);
+  const { items, setItems, refresh } = hl;
   const [info, setInfo] = useState<ReaderDocument | null>(null);
   const [source, setSource] = useState<PdfSource | null>(null);
-  const [highlights, setHighlights] = useState<ReaderHighlight[]>([]);
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(startPage ?? 1);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<"highlights" | "about">("highlights");
   const [findText, setFindText] = useState(startFind ?? "");
   const [popover, setPopover] = useState<{ id: number; x: number; y: number } | null>(null);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [toast, setToast] = useState<{ text: string; href?: string } | null>(null);
-  const toastTimer = useRef<number | null>(null);
+  const shownOnArrival = useRef(false);
 
   const title = info?.document.title ?? "";
-
-  /** Shows a short message; a sticky one stays until the next message replaces it. */
-  const say = useCallback((text: string, href?: string, sticky = false) => {
-    setToast({ text, href });
-    if (toastTimer.current) window.clearTimeout(toastTimer.current);
-    if (!sticky) toastTimer.current = window.setTimeout(() => setToast(null), 6000);
-  }, []);
+  const docHighlights = useMemo(() => items.filter((h) => h.doc_id === docId), [items, docId]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [doc, hl] = await Promise.all([getReaderDocument(persona, docId), listHighlights(persona, docId)]);
+        const doc = await getReaderDocument(persona, docId);
         if (cancelled) return;
         setInfo(doc);
-        setHighlights(hl.items);
         setSource(await readerPdfSource(persona, doc.file_url));
       } catch (e) {
         if (!cancelled) setError(errorText(e));
@@ -165,83 +211,47 @@ function ReaderDocumentView({
     };
   }, [docId, persona]);
 
+  // Arriving from a highlight listed under another document: take the reader to it.
+  useEffect(() => {
+    if (shownOnArrival.current || !startHighlight || !pages || !hl.loaded) return;
+    const h = docHighlights.find((x) => x.id === startHighlight);
+    if (!h) return;
+    shownOnArrival.current = true;
+    window.setTimeout(() => viewer.current?.showHighlight(h), 300);
+  }, [startHighlight, pages, hl.loaded, docHighlights]);
+
   const onSelect = useCallback(
     async (sel: NewSelection) => {
-      const temp: ReaderHighlight = { id: -Date.now(), doc_id: docId, page: sel.page, rects: sel.rects, quote: sel.quote };
-      setHighlights((hs) => [...hs, temp]);
+      const temp: ReaderHighlight = {
+        id: -Date.now(),
+        doc_id: docId,
+        doc_title: title,
+        page: sel.page,
+        rects: sel.rects,
+        quote: sel.quote,
+        created_at: new Date().toISOString(),
+        in_session: true,
+      };
+      setItems((hs) => [temp, ...hs]);
       setTab("highlights");
       try {
         const saved = await createHighlight(persona, { doc_id: docId, ...sel });
-        setHighlights((hs) => hs.map((h) => (h.id === temp.id ? saved : h)));
+        setItems((hs) => hs.map((h) => (h.id === temp.id ? saved : h)));
+        void refresh(); // the first highlight after a break starts a new session
       } catch (e) {
-        setHighlights((hs) => hs.filter((h) => h.id !== temp.id));
+        setItems((hs) => hs.filter((h) => h.id !== temp.id));
         say(errorText(e));
       }
     },
-    [docId, persona, say],
+    [docId, title, persona, say, setItems, refresh],
   );
 
-  const remove = useCallback(
-    async (id: number) => {
-      const before = highlights;
-      setHighlights((hs) => hs.filter((h) => h.id !== id));
-      setSelected((s) => {
-        const next = new Set(s);
-        next.delete(id);
-        return next;
-      });
-      setPopover(null);
-      try {
-        await deleteHighlight(persona, id);
-      } catch (e) {
-        setHighlights(before);
-        say(errorText(e));
-      }
+  const showHighlight = useCallback(
+    (h: ReaderHighlight) => {
+      if (h.doc_id === docId) viewer.current?.showHighlight(h);
+      else router.push(highlightHref(h));
     },
-    [highlights, persona, say],
-  );
-
-  const copy = useCallback(
-    async (h: ReaderHighlight) => {
-      try {
-        await navigator.clipboard.writeText(citation(h, title));
-        say("Copied, with its source");
-      } catch {
-        say("Copying isn't allowed here. Select the text in the list instead.");
-      }
-    },
-    [say, title],
-  );
-
-  const saveNote = useCallback(
-    async (id: number, note: string) => {
-      setHighlights((hs) => hs.map((h) => (h.id === id ? { ...h, note } : h)));
-      try {
-        await updateHighlightNote(persona, id, note);
-      } catch (e) {
-        say(errorText(e));
-      }
-    },
-    [persona, say],
-  );
-
-  const insertInto = useCallback(
-    async (h: ReaderHighlight, draft: InsertableDraft) => {
-      say(`Adding to “${draft.title}”…`, undefined, true);
-      try {
-        await addExcerptToDraft(persona, draft.id, h.id);
-        say(`Added to the end of “${draft.title}”`, `/studio?open=${encodeURIComponent(draft.id)}`);
-      } catch (e) {
-        say(errorText(e));
-      }
-    },
-    [persona, say],
-  );
-
-  const startDraft = useCallback(
-    (ids: number[]) =>
-      router.push(`/studio?new=1&ref=${ids.filter((i) => i > 0).join(",")}&persona=${encodeURIComponent(persona)}`),
-    [router, persona],
+    [docId, router],
   );
 
   useEffect(() => {
@@ -251,11 +261,7 @@ function ReaderDocumentView({
     return () => window.removeEventListener("keydown", onKey);
   }, [popover]);
 
-  const sorted = useMemo(
-    () => [...highlights].sort((a, b) => a.page - b.page || (a.rects[0]?.y ?? 0) - (b.rects[0]?.y ?? 0)),
-    [highlights],
-  );
-  const popoverHighlight = popover ? highlights.find((h) => h.id === popover.id) : undefined;
+  const popoverHighlight = popover ? items.find((h) => h.id === popover.id) : undefined;
 
   return (
     <div className="flex h-full min-h-0">
@@ -296,7 +302,7 @@ function ReaderDocumentView({
             <PdfViewer
               ref={viewer}
               source={source}
-              highlights={highlights}
+              highlights={docHighlights}
               initialPage={startPage}
               initialFind={startFind}
               onSelect={(sel) => void onSelect(sel)}
@@ -311,7 +317,7 @@ function ReaderDocumentView({
         </div>
       </div>
 
-      <aside className="flex w-[380px] shrink-0 flex-col border-l border-border bg-surface-raised">
+      <aside className="flex w-[400px] shrink-0 flex-col border-l border-border bg-surface-raised">
         <div className="flex shrink-0 gap-1 border-b border-border p-2" role="tablist">
           {(["highlights", "about"] as const).map((t) => (
             <button
@@ -322,59 +328,27 @@ function ReaderDocumentView({
               onClick={() => setTab(t)}
               className={`rounded-md px-3 py-1.5 text-[13px] font-medium ${tab === t ? "bg-accent/10 text-accent" : "text-text-muted hover:bg-surface-sunken"}`}
             >
-              {t === "highlights" ? `Your highlights${highlights.length ? ` (${highlights.length})` : ""}` : "About"}
+              {t === "highlights" ? `Your highlights${items.length ? ` (${items.length})` : ""}` : "About"}
             </button>
           ))}
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <div className="min-h-0 flex-1">
           {tab === "highlights" ? (
-            sorted.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-border p-4 text-sm text-text-muted">
-                Select any text in the document to highlight it. Your highlights are private to you, and you can
-                start a new draft from them or add them to one of your drafts.
-              </p>
-            ) : (
-              <ul className="space-y-3">
-                {sorted.map((h) => (
-                  <HighlightCard
-                    key={h.id}
-                    h={h}
-                    persona={persona}
-                    checked={selected.has(h.id)}
-                    onCheck={(on) =>
-                      setSelected((s) => {
-                        const next = new Set(s);
-                        if (on) next.add(h.id);
-                        else next.delete(h.id);
-                        return next;
-                      })
-                    }
-                    onShow={() => viewer.current?.showHighlight(h)}
-                    onCopy={() => void copy(h)}
-                    onRemove={() => void remove(h.id)}
-                    onNote={(note) => void saveNote(h.id, note)}
-                    onInsert={(d) => void insertInto(h, d)}
-                    onStartDraft={() => startDraft([h.id])}
-                  />
-                ))}
-              </ul>
-            )
+            <HighlightsPanel
+              persona={persona}
+              items={items}
+              setItems={setItems}
+              session={hl.session}
+              onStartFresh={() => void hl.startFresh()}
+              currentDocId={docId}
+              onShow={showHighlight}
+              onRemove={(id) => void hl.remove(id)}
+              say={say}
+            />
           ) : (
-            info && <AboutPanel info={info} current={docId} onOpen={onOpen} />
+            <div className="h-full overflow-y-auto p-3">{info && <AboutPanel info={info} current={docId} onOpen={onOpen} />}</div>
           )}
         </div>
-        {tab === "highlights" && selected.size > 0 && (
-          <div className="flex shrink-0 items-center gap-2 border-t border-border p-3">
-            <span className="text-[13px] text-text-muted">{selected.size} selected</span>
-            <button
-              type="button"
-              onClick={() => startDraft(sorted.filter((h) => selected.has(h.id)).map((h) => h.id))}
-              className="ml-auto rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white hover:bg-accent-hover"
-            >
-              New draft from these
-            </button>
-          </div>
-        )}
       </aside>
 
       {popover && popoverHighlight && (
@@ -384,146 +358,49 @@ function ReaderDocumentView({
             style={{ left: popover.x, top: popover.y + 8 }}
             onClick={(e) => e.stopPropagation()}
           >
-            <button type="button" className="rounded px-2 py-1 text-[13px] hover:bg-surface-sunken" onClick={() => { void copy(popoverHighlight); setPopover(null); }}>
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-[13px] hover:bg-surface-sunken"
+              onClick={() => {
+                navigator.clipboard
+                  .writeText(`“${popoverHighlight.quote}”\n— ${title}, p. ${popoverHighlight.page}`)
+                  .then(() => say("Copied, with its source"))
+                  .catch(() => say("Copying isn't allowed here. Select the text in the list instead."));
+                setPopover(null);
+              }}
+            >
               Copy
             </button>
-            <button type="button" className="rounded px-2 py-1 text-[13px] hover:bg-surface-sunken" onClick={() => { setTab("highlights"); setPopover(null); }}>
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-[13px] hover:bg-surface-sunken"
+              onClick={() => {
+                setTab("highlights");
+                setPopover(null);
+                window.setTimeout(
+                  () => document.getElementById(`hl-card-${popoverHighlight.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }),
+                  50,
+                );
+              }}
+            >
               Show in list
             </button>
-            <button type="button" className="rounded px-2 py-1 text-[13px] text-status-rejected-text hover:bg-surface-sunken" onClick={() => void remove(popoverHighlight.id)}>
+            <button
+              type="button"
+              className="rounded px-2 py-1 text-[13px] text-status-rejected-text hover:bg-surface-sunken"
+              onClick={() => {
+                void hl.remove(popoverHighlight.id);
+                setPopover(null);
+              }}
+            >
               Remove
             </button>
           </div>
         </div>
       )}
 
-      {toast && (
-        <div className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-text px-4 py-2 text-[13px] text-surface shadow-lg" role="status">
-          {toast.text}
-          {toast.href && (
-            <Link href={toast.href} className="font-medium underline">
-              Open draft
-            </Link>
-          )}
-        </div>
-      )}
+      {toast}
     </div>
-  );
-}
-
-function HighlightCard({
-  h,
-  persona,
-  checked,
-  onCheck,
-  onShow,
-  onCopy,
-  onRemove,
-  onNote,
-  onInsert,
-  onStartDraft,
-}: {
-  h: ReaderHighlight;
-  persona: PersonaKey;
-  checked: boolean;
-  onCheck: (on: boolean) => void;
-  onShow: () => void;
-  onCopy: () => void;
-  onRemove: () => void;
-  onNote: (note: string) => void;
-  onInsert: (d: InsertableDraft) => void;
-  onStartDraft: () => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [note, setNote] = useState(h.note ?? "");
-  const [menu, setMenu] = useState<InsertableDraft[] | null>(null);
-  const [menuError, setMenuError] = useState<string | null>(null);
-  const saving = h.id < 0;
-
-  async function openMenu() {
-    if (menu) {
-      setMenu(null);
-      return;
-    }
-    setMenuError(null);
-    try {
-      setMenu((await listInsertableDrafts(persona)).items);
-    } catch (e) {
-      setMenuError(errorText(e));
-    }
-  }
-
-  return (
-    <li className="rounded-lg border border-border bg-surface p-3">
-      <div className="flex items-start gap-2">
-        <input
-          type="checkbox"
-          aria-label="Select this highlight"
-          checked={checked}
-          disabled={saving}
-          onChange={(e) => onCheck(e.target.checked)}
-          className="mt-1 h-4 w-4 shrink-0 accent-accent"
-        />
-        <button type="button" onClick={onShow} className="min-w-0 flex-1 text-left">
-          <p className="line-clamp-5 border-l-[3px] border-[#F2C200] pl-2 text-sm text-text">{h.quote}</p>
-          <p className="mt-1 text-xs text-text-muted">Page {h.page}{saving ? " · saving…" : ""}</p>
-        </button>
-      </div>
-      {editing ? (
-        <div className="mt-2">
-          <textarea
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            rows={2}
-            placeholder="Why this matters, or how you'll use it"
-            className="w-full resize-none rounded-lg border border-border-strong bg-surface-sunken px-2 py-1 text-[13px] text-text outline-none focus:border-accent"
-          />
-          <div className="mt-1 flex justify-end gap-2 text-[13px]">
-            <button type="button" className="text-text-muted" onClick={() => setEditing(false)}>Cancel</button>
-            <button type="button" className="font-medium text-accent" onClick={() => { onNote(note); setEditing(false); }}>Save note</button>
-          </div>
-        </div>
-      ) : (
-        h.note && <p className="mt-2 rounded bg-surface-sunken px-2 py-1 text-[13px] text-text-muted">{h.note}</p>
-      )}
-      {!saving && (
-        <div className="relative mt-2 flex flex-wrap gap-1 text-[13px]">
-          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-surface-sunken" onClick={onCopy}>Copy</button>
-          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-surface-sunken" onClick={() => void openMenu()}>
-            Insert into draft ▾
-          </button>
-          <button type="button" className="rounded border border-border px-2 py-0.5 hover:bg-surface-sunken" onClick={onStartDraft}>New draft from this</button>
-          <button type="button" className="rounded px-2 py-0.5 text-text-muted hover:bg-surface-sunken" onClick={() => setEditing(true)}>{h.note ? "Edit note" : "Add note"}</button>
-          <button type="button" className="rounded px-2 py-0.5 text-status-rejected-text hover:bg-surface-sunken" onClick={onRemove}>Remove</button>
-          {(menu || menuError) && (
-            <div className="absolute left-0 top-full z-20 mt-1 w-full rounded-lg border border-border bg-surface-raised p-1 shadow-lg">
-              {menuError ? (
-                <p className="p-2 text-[13px] text-status-rejected-text">{menuError}</p>
-              ) : menu && menu.length === 0 ? (
-                <p className="p-2 text-[13px] text-text-muted">You have no drafts you can edit right now.</p>
-              ) : (
-                menu?.slice(0, 10).map((d) => (
-                  <button
-                    key={d.id}
-                    type="button"
-                    className="block w-full rounded px-2 py-1.5 text-left hover:bg-surface-sunken"
-                    onClick={() => {
-                      setMenu(null);
-                      onInsert(d);
-                    }}
-                  >
-                    <span className="block truncate text-[13px] text-text">{d.title}</span>
-                    <span className="block text-xs text-text-muted">
-                      {[statusLabel(d.status), d.updated_at ? formatDateIST(d.updated_at) : ""].filter(Boolean).join(" · ")}
-                    </span>
-                  </button>
-                ))
-              )}
-            </div>
-          )}
-        </div>
-      )}
-    </li>
   );
 }
 
@@ -607,16 +484,11 @@ function ReaderHome({
   setPersona: (p: PersonaKey) => void;
 }) {
   const router = useRouter();
+  const [toast, say] = useToast();
+  const hl = useHighlights(persona, say);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<CorpusHit[]>([]);
-  const [recent, setRecent] = useState<ReaderHighlight[]>([]);
   const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    void listHighlights(persona)
-      .then((r) => setRecent(r.items))
-      .catch(() => setRecent([]));
-  }, [persona]);
 
   async function search() {
     if (!query.trim()) return;
@@ -629,16 +501,6 @@ function ReaderHome({
       setBusy(false);
     }
   }
-
-  const byDoc = useMemo(() => {
-    const m = new Map<string, { title: string; count: number }>();
-    for (const h of recent) {
-      const e = m.get(h.doc_id) ?? { title: h.doc_title ?? h.doc_id, count: 0 };
-      e.count += 1;
-      m.set(h.doc_id, e);
-    }
-    return [...m.entries()].slice(0, 8);
-  }, [recent]);
 
   const open = (id: string) => router.push(`/studio/reader?doc=${encodeURIComponent(id)}`);
 
@@ -681,23 +543,23 @@ function ReaderHome({
           ))}
         </ul>
       )}
-      {byDoc.length > 0 && (
-        <section>
-          <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-text-muted">Where you&apos;ve highlighted</h2>
-          <ul className="divide-y divide-border rounded-lg border border-border bg-surface-raised">
-            {byDoc.map(([id, e]) => (
-              <li key={id}>
-                <button type="button" onClick={() => open(id)} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-surface-sunken">
-                  <span className="min-w-0 flex-1 truncate text-sm text-text">{e.title}</span>
-                  <span className="shrink-0 text-xs text-text-muted">
-                    {e.count} highlight{e.count === 1 ? "" : "s"}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+      {hl.loaded && (
+        <section aria-label="Your highlights">
+          <h2 className="mb-3 font-display text-lg font-medium">Your highlights</h2>
+          <HighlightsPanel
+            persona={persona}
+            items={hl.items}
+            setItems={hl.setItems}
+            session={hl.session}
+            onStartFresh={() => void hl.startFresh()}
+            onShow={(h) => router.push(highlightHref(h))}
+            onRemove={(id) => void hl.remove(id)}
+            say={say}
+            variant="page"
+          />
         </section>
       )}
+      {toast}
     </div>
   );
 }
